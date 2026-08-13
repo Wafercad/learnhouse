@@ -7,7 +7,7 @@ import UserAvatar from '@components/Objects/UserAvatar'
 import useAdminStatus from '@components/Hooks/useAdminStatus'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
 import { useOrg } from '@components/Contexts/OrgContext'
-import { getUriWithOrg, getMainDomainUri, isMultiOrgModeEnabled } from '@services/config/config'
+import { getUriWithOrg, getMainDomainUri, isMultiOrgModeEnabled, getWCLoginUrl } from '@services/config/config'
 import { getOrgLogoMediaDirectory } from '@services/media/media'
 import Tooltip from '@components/Objects/StyledElements/Tooltip/Tooltip'
 import {
@@ -170,13 +170,10 @@ export const HeaderProfileBox = ({ primaryColor = '' }: { primaryColor?: string 
             <li>
               <LanguageSwitcher primaryColor={primaryColor} />
             </li>
-            <li>
-              <Link
-                className={`px-3 py-2 rounded-lg transition-colors text-sm font-bold ${colors.hoverBg} ${colors.text}`}
-                href={getUriWithOrg(org?.slug, '/login')} >{t('auth.login')}</Link>
-            </li>
-            <li className={`rounded-lg shadow-sm transition-colors px-4 py-2 text-xs sm:text-sm font-bold ml-1 sm:ml-2 ${colors.signUpBtn}`}>
-              <Link href={getUriWithOrg(org?.slug, '/signup')}>{t('auth.sign_up')}</Link>
+            {/* Federated auth: LearnHouse owns no login/signup — send "Sign in"
+                to the Wafercad console (the IdP). No self-serve sign-up here. */}
+            <li className={`rounded-lg shadow-sm transition-colors px-4 py-2 text-xs sm:text-sm font-bold ${colors.signUpBtn}`}>
+              <a href={getWCLoginUrl()}>{t('auth.login')}</a>
             </li>
           </ul>
         </div>

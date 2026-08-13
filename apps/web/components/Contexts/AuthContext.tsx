@@ -12,6 +12,7 @@ import {
   getAPIUrl,
   getLEARNHOUSE_TOP_DOMAIN_VAL,
   getLEARNHOUSE_DOMAIN_VAL,
+  getWCLogoutUrl,
 } from '@services/config/config'
 import { isSubdomainOf, isSameHost, isLocalhost as isLocalhostCheck } from '@services/utils/ts/hostUtils'
 import { safeRedirectUrl } from '@services/auth/redirects'
@@ -79,6 +80,10 @@ export interface SignInResult {
 export interface SignOutOptions {
   callbackUrl?: string
   redirect?: boolean
+  // Why the sign-out happened — threaded to the console login as ?reason= so it
+  // can show the right message. Federated logout ignores callbackUrl (LH-local)
+  // and always lands on the Wafercad console via OIDC end-session.
+  reason?: 'signed_out' | 'session_expired'
 }
 
 // Result of a passwordless (magic link) request. The backend ALWAYS answers 200
@@ -1018,7 +1023,7 @@ export function SessionProvider({
 
   // Sign out function
   const handleSignOut = useCallback(async (options: SignOutOptions = {}) => {
-    const { callbackUrl = '/', redirect = true } = options
+    const { redirect = true, reason = 'signed_out' } = options
 
     let logoutSuccess = false
     try {
@@ -1060,7 +1065,9 @@ export function SessionProvider({
     broadcastChannelRef.current?.postMessage({ type: 'LOGOUT' })
 
     if (redirect) {
-      window.location.href = safeRedirectUrl(callbackUrl)
+      // Federated: end the IdP (account_service) session too, then land on the
+      // Wafercad console login — never a LearnHouse-local page.
+      window.location.href = getWCLogoutUrl(reason)
     }
 
     // If backend logout failed, log a warning (user is still logged out locally)
@@ -1080,11 +1087,9 @@ export function SessionProvider({
       if (!hasSessionMarker()) return
       authFailureHandledRef.current = true
 
-      const detail = (event as CustomEvent<{ callbackUrl?: string }>).detail
-      const callbackUrl = detail?.callbackUrl
-        || (window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login')
-
-      handleSignOut({ callbackUrl, redirect: true }).catch((error) => {
+      // Hard expiry (refresh failed): federated sign-out with the expired reason,
+      // so the console login explains why. callbackUrl is LH-local and unused now.
+      handleSignOut({ reason: 'session_expired', redirect: true }).catch((error) => {
         console.error('Forced sign-out failed:', error)
         authFailureHandledRef.current = false
       })
@@ -1264,7 +1269,7 @@ export async function signIn(
 
 // signOut function - matches NextAuth's API
 export async function signOut(options?: SignOutOptions): Promise<void> {
-  const { callbackUrl = '/', redirect = true } = options || {}
+  const { redirect = true, reason = 'signed_out' } = options || {}
 
   try {
     // Use Next.js API route to ensure cookies are cleared correctly
@@ -1296,7 +1301,8 @@ export async function signOut(options?: SignOutOptions): Promise<void> {
   }
 
   if (redirect) {
-    window.location.href = safeRedirectUrl(callbackUrl)
+    // Federated: OIDC end-session at account_service, then the console login.
+    window.location.href = getWCLogoutUrl(reason)
   }
 }
 

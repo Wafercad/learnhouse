@@ -436,6 +436,30 @@ export const getCollabUrl = () => getConfig('NEXT_PUBLIC_COLLAB_URL', 'ws://loca
 export const getWCDashboardUrl = () =>
   getConfig('NEXT_PUBLIC_WC_DASHBOARD_URL', 'https://app.wafercad.com')
 
+// Wafercad Cloud Suite console SIGN-IN URL. LearnHouse doesn't own auth — the
+// console/account service is the IdP — so any "sign in" affordance must leave for
+// the console, never a LearnHouse-local /login. Same runtime-config rationale as
+// getWCDashboardUrl.
+export const getWCLoginUrl = () =>
+  getConfig('NEXT_PUBLIC_WC_LOGIN_URL', 'https://app.wafercad.com/login')
+
+// RP-initiated OIDC logout URL: sends the browser to the Wafercad account
+// service's end_session endpoint, which clears the IdP SSO session cookie and
+// then bounces to the console login (carrying an optional signed-out/expired
+// reason). Falls back to the console login directly if OIDC isn't configured, so
+// sign-out always lands somewhere sane.
+export const getWCLogoutUrl = (reason?: string): string => {
+  const login = getWCLoginUrl() + (reason ? `?reason=${encodeURIComponent(reason)}` : '')
+  const issuer = getConfig('NEXT_PUBLIC_WC_OIDC_ISSUER', '').replace(/\/+$/, '')
+  const clientId = getConfig('NEXT_PUBLIC_WC_OIDC_CLIENT_ID', '')
+  if (!issuer || !clientId) return login
+  const params = new URLSearchParams({
+    client_id: clientId,
+    post_logout_redirect_uri: login,
+  })
+  return `${issuer}/oauth/logout?${params.toString()}`
+}
+
 export const getDefaultOrg = () => {
   // 1. Env var (backward compat)
   const envVal = getConfig('NEXT_PUBLIC_LEARNHOUSE_DEFAULT_ORG')

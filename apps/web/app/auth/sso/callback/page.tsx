@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { handleSSOCallback, SSOError, getErrorMessage } from '@services/auth/sso'
+import { getWCLoginUrl } from '@services/config/config'
 import { useAuth } from '@components/Contexts/AuthContext'
 import { Shield, AlertTriangle, Loader2, Info, Copy, Check } from 'lucide-react'
 import Link from 'next/link'
@@ -90,11 +91,17 @@ export default function SSOCallbackPage() {
           setStatus('error')
         } else if (signInResult?.ok) {
           setStatus('success')
-          router.push(redirectUrl)
+          // replace (not push): the callback URL carries a single-use state, so it
+          // must NOT stay in history — otherwise Back re-loads it and the consumed
+          // state throws invalid_state.
+          router.replace(redirectUrl)
         } else {
           // No error but not ok either - likely a redirect happened
           setStatus('success')
-          router.push(redirectUrl)
+          // replace (not push): the callback URL carries a single-use state, so it
+          // must NOT stay in history — otherwise Back re-loads it and the consumed
+          // state throws invalid_state.
+          router.replace(redirectUrl)
         }
       } catch (err: any) {
         console.error('SSO callback error:', err)
@@ -261,12 +268,14 @@ export default function SSOCallbackPage() {
           )}
 
           <div className="space-y-3">
-            <Link
-              href="/login"
+            {/* Federated auth: "try again" means re-authenticate at the Wafercad
+                console (the IdP), not a LearnHouse-local login. */}
+            <a
+              href={getWCLoginUrl()}
               className="block w-full py-2 px-4 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
             >
               {t('auth.sso_callback.try_again')}
-            </Link>
+            </a>
             <Link
               href="/"
               className="block w-full py-2 px-4 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors"

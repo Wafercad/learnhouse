@@ -2,6 +2,9 @@ const { withSentryConfig } = require("@sentry/nextjs");
 
 /** @type {import('common.next').NextConfig} */
 const nextConfig = {
+  // Hide the Next.js dev-tools indicator (the floating overlay + "Disable Dev
+  // Tools for this project" menu) — we don't want it shown in this app at all.
+  devIndicators: false,
   // Required by PostHog's reverse-proxy rewrites below so the trailing-slash
   // handling on /ingest/* doesn't 308-redirect ingestion requests.
   skipTrailingSlashRedirect: true,
