@@ -2,7 +2,7 @@
 import React, { useMemo } from 'react'
 
 import Link from 'next/link'
-import { Crown, Shield, User, Users, SignOut, CaretDown, Globe, Check, ShoppingBag, House, Buildings, Plus, CreditCard } from '@phosphor-icons/react'
+import { Crown, Shield, User, Users, SignOut, CaretDown, Check, House, Buildings, Plus, CreditCard } from '@phosphor-icons/react'
 import UserAvatar from '@components/Objects/UserAvatar'
 import useAdminStatus from '@components/Hooks/useAdminStatus'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
@@ -24,8 +24,6 @@ import {
 } from "@components/ui/dropdown-menu"
 import { signOut } from '@components/Contexts/AuthContext'
 import { useTranslation } from 'react-i18next'
-import { changeLanguage } from '@/lib/i18n'
-import { AVAILABLE_LANGUAGES } from '@/lib/languages'
 import LanguageSwitcher from '@components/Utils/LanguageSwitcher'
 import { useLHAnalytics, AnalyticsEvent } from '@services/analytics'
 import { getMenuColorClasses } from '@services/utils/ts/colorUtils'
@@ -47,7 +45,7 @@ export const HeaderProfileBox = ({ primaryColor = '' }: { primaryColor?: string 
   const session = useLHSession() as any
   const { userRoles, rights } = useAdminStatus()
   const org = useOrg() as any
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { track } = useLHAnalytics()
   const colors = getMenuColorClasses(primaryColor)
 
