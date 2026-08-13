@@ -1,0 +1,109 @@
+# LearnHouse — Wafercad Cloud Campus staging stack (VM-CAMPUS).
+#
+# Per-service shape (api + web + db + redis; NOT collab), matching the VM nginx
+# reverse proxy in orchestrator/deploy/stage/nginx/campus.conf:
+#     /api/ -> 127.0.0.1:1338 (this api)   /  -> 127.0.0.1:3000 (this web)
+#
+# Brought up by orchestrator/deploy/stage/startup-campus.sh:
+#     docker compose -f docker/docker-compose.yml up -d api web db redis
+# which first writes ../.env from learnhouse.stage.env + Secret Manager
+# (LEARNHOUSE_AUTH_JWT_SECRET_KEY, resend key). env_file: ../.env therefore
+# carries the OIDC/domain/secret vars; topology-fixed infra wiring (db/redis
+# hosts, ports, the SQL/Redis DSNs) lives inline in `environment:` below.
+#
+# db/redis are internal-only (no published host ports) — the stage-web firewall
+# opens just 80/443, and api/web bind to 127.0.0.1 so only nginx :443 is public.
+#
+# NEXT_PUBLIC_* are consumed at RUNTIME (apps/web/server-wrapper.js writes
+# public/runtime-config.js at container start), so they are plain runtime env
+# here — the web image needs no per-environment rebuild.
+name: learnhouse-stage
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=learnhouse
+      # Internal-only DB (not published); a real value can be injected by
+      # appending LEARNHOUSE_DB_PASSWORD=... to ../.env from Secret Manager.
+      - POSTGRES_PASSWORD=${LEARNHOUSE_DB_PASSWORD:-learnhouse}
+      - POSTGRES_DB=learnhouse
+    volumes:
+      - lh_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U learnhouse"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+    networks: [lh]
+
+  redis:
+    image: redis:8.6.1-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - lh_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+    networks: [lh]
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - LEARNHOUSE_PORT=9000
+      - HOSTNAME=0.0.0.0
+      # Topology-fixed DSNs pointing at the sibling services on the compose
+      # network. Redis DB is numeric (/0); the config.yaml default's /learnhouse
+      # path is not a valid redis-py db index.
+      - LEARNHOUSE_SQL_CONNECTION_STRING=postgresql://learnhouse:${LEARNHOUSE_DB_PASSWORD:-learnhouse}@db:5432/learnhouse
+      - LEARNHOUSE_REDIS_CONNECTION_STRING=redis://redis:6379/0
+    ports:
+      - "127.0.0.1:1338:9000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [lh]
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Browser + SSR reach the api through the public edge (campus.wafercad.com);
+      # campus.conf routes /api/ -> the api container. These override the
+      # localhost defaults in apps/web/services/config/config.ts.
+      - NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL=https://campus.wafercad.com/
+      - NEXT_PUBLIC_LEARNHOUSE_API_URL=https://campus.wafercad.com/api/v1/
+      - NEXT_PUBLIC_LEARNHOUSE_DOMAIN=campus.wafercad.com
+      - NEXT_PUBLIC_LEARNHOUSE_HTTPS=true
+      # NEXT_PUBLIC_WC_* (SSO handoff back to the WCS console/IdP) come from
+      # ../.env (learnhouse.stage.env).
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+    networks: [lh]
+
+networks:
+  lh:
+    name: learnhouse-stage
+
+volumes:
+  lh_db_data:
+  lh_redis_data:
