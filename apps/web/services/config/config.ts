@@ -429,6 +429,13 @@ export const isEEAvailable = (): boolean => {
 // Collaboration server WebSocket URL
 export const getCollabUrl = () => getConfig('NEXT_PUBLIC_COLLAB_URL', 'ws://localhost:4000')
 
+// Wafercad Cloud Suite console URL — Campus is one app of the suite, so the
+// "Back to Wafercad Suite" nav links point here. Read via runtime config (not a
+// build-inlined process.env) so it resolves in the stage Docker build too, where
+// NEXT_PUBLIC_* are injected into window.__RUNTIME_CONFIG__ at container start.
+export const getWCDashboardUrl = () =>
+  getConfig('NEXT_PUBLIC_WC_DASHBOARD_URL', 'https://app.wafercad.com')
+
 export const getDefaultOrg = () => {
   // 1. Env var (backward compat)
   const envVal = getConfig('NEXT_PUBLIC_LEARNHOUSE_DEFAULT_ORG')

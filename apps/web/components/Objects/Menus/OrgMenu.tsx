@@ -5,7 +5,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query/keys'
-import { getUriWithOrg } from '@services/config/config'
+import { getUriWithOrg, getWCDashboardUrl } from '@services/config/config'
 import { fetchRAGChatSessions, RAGChatSession } from '@services/ai/ai'
 import { HeaderProfileBox } from '@components/Security/HeaderProfileBox'
 import MenuLinks from './OrgMenuLinks'
@@ -25,6 +25,7 @@ import {
   SquaresFour,
   ChalkboardSimple,
   Signpost,
+  House,
 } from '@phosphor-icons/react'
 import { DiscordIcon } from '@components/Objects/Icons/DiscordIcon'
 import {
@@ -58,6 +59,7 @@ export const OrgMenu = (props: any) => {
   const [isFocusMode, setIsFocusMode] = useState(false)
   const pathname = usePathname()
   const { t } = useTranslation()
+  const wcDashboardUrl = getWCDashboardUrl()
   const { rights } = useAdminStatus()
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false)
   const { isVisible: isJoinBannerVisible } = useJoinBannerVisible()
@@ -180,6 +182,27 @@ export const OrgMenu = (props: any) => {
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Back to the Wafercad Cloud Suite dashboard */}
+            <AuthenticatedClientElement checkMethod="authentication">
+              <div className="hidden md:flex">
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <a
+                        href={wcDashboardUrl}
+                        className={`p-2 rounded-lg transition-colors ${colors.iconBtn}`}
+                        aria-label="Back to Wafercad Suite"
+                      >
+                        <House size={20} weight="fill" />
+                      </a>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      Back to Wafercad Suite
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </AuthenticatedClientElement>
             {/* Progress / Trail */}
             <AuthenticatedClientElement checkMethod="authentication">
               <div className="hidden md:flex">

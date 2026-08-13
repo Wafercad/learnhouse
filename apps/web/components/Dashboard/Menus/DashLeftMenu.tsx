@@ -52,7 +52,7 @@ import React, { useEffect, useState } from 'react'
 import UserAvatar from '../../Objects/UserAvatar'
 import AdminAuthorization from '@components/Security/AdminAuthorization'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
-import { getUriWithOrg, getAPIUrl, getMainDomainUri, isMultiOrgModeEnabled } from '@services/config/config'
+import { getUriWithOrg, getAPIUrl, getMainDomainUri, isMultiOrgModeEnabled, getWCDashboardUrl } from '@services/config/config'
 import { useTranslation } from 'react-i18next'
 import { changeLanguage } from '@/lib/i18n'
 import {
@@ -108,6 +108,7 @@ const UPGRADE_STARS: {
 function DashLeftMenu() {
   const org = useOrg() as any
   const session = useLHSession() as any
+  const wcDashboardUrl = getWCDashboardUrl()
   const { t, i18n } = useTranslation()
   const { track } = useLHAnalytics('dashboard')
   const pathname = usePathname() || ''
@@ -325,6 +326,15 @@ function DashLeftMenu() {
       <div className="flex-1 flex flex-col justify-center py-4 px-3">
         <AdminAuthorization authorizationMode="component">
           <div className="space-y-1">
+            {/* Back to the Wafercad Cloud Suite dashboard (Campus is one of its
+                apps). Opens the WCS console; configurable per environment. */}
+            <MenuLink
+              href={wcDashboardUrl}
+              icon={<Buildings size={20} weight="fill" />}
+              label="Wafercad Suite"
+              isCollapsed={isCollapsed}
+              isExternal
+            />
             <MenuLink
               href="/dash"
               icon={<House size={20} weight="fill" />}
