@@ -8,7 +8,7 @@ from src.routers import health
 from src.routers import instance
 from src.routers import plans
 from src.routers import usergroups
-from src.routers import dev, trail, users, auth, orgs, roles, search
+from src.routers import dev, trail, users, auth, orgs, roles, search, sso
 from src.routers import mfa as mfa_router_module
 from src.routers import monitoring
 from src.routers import stream
@@ -89,6 +89,7 @@ v1_router.include_router(
 v1_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 # Two-factor: enrollment/management plus the /auth/login/mfa challenge.
 v1_router.include_router(mfa_router_module.router, prefix="/auth", tags=["auth"])
+v1_router.include_router(sso.router, prefix="/auth/sso", tags=["auth-sso"])
 v1_router.include_router(
     orgs.router,
     prefix="/orgs",
