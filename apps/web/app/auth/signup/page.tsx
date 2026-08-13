@@ -1,59 +1,21 @@
+import { redirect } from 'next/navigation'
 import { Metadata } from 'next'
-import { getOrganizationContextInfo } from '@services/organizations/orgs'
-import { getAuthOrgSlug } from '@services/org/orgResolution'
-import SignUpClient from './signup'
-import { Suspense } from 'react'
-import PageLoading from '@components/Objects/Loaders/PageLoading'
-import OrgNotFound from '@components/Objects/StyledElements/Error/OrgNotFound'
 
-export async function generateMetadata(): Promise<Metadata> {
-  const orgslug = await getAuthOrgSlug()
-
-  if (!orgslug) {
-    return { title: 'Sign up — LearnHouse' }
-  }
-
-  let org: any = null
-  try {
-    org = await getOrganizationContextInfo(orgslug, null)
-  } catch {
-    // Stale cookie or unknown org — fall back to generic title
-  }
-
-  return {
-    title: 'Sign up' + ` — ${org?.name || 'LearnHouse'}`,
-    robots: { index: false, follow: false },
-  }
+// Self-service signup is disabled on Cloud Campus. Onboarding is invitation/
+// credential-based and owned by Wafercad: users are provisioned via the console
+// (invite code -> Wafercad account -> SSO hand-off). Any direct hit to
+// /auth/signup is bounced to the Wafercad login. The pre-auth course marketing
+// lives on the Campus landing, not here. Configurable via NEXT_PUBLIC_WC_LOGIN_URL.
+export const metadata: Metadata = {
+  title: 'Redirecting to Wafercad…',
+  robots: { index: false, follow: false },
 }
 
-const SignUp = async () => {
-  const orgslug = await getAuthOrgSlug()
+const WC_LOGIN_URL =
+  process.env.NEXT_PUBLIC_WC_LOGIN_URL || 'https://app.wafercad.com/login'
 
-  // On the org-less apex (learn.io/signup) there is no subdomain org. We keep
-  // `org` null so the page renders the generic, org-less open-signup form —
-  // exactly like the apex login page. The account is still created against the
-  // instance default org, but that is resolved server-side in the signup API so
-  // the UI never shows an org here.
-  let org: any = null
-  if (orgslug) {
-    try {
-      org = await getOrganizationContextInfo(orgslug, null)
-    } catch {
-      org = null
-    }
-    // A missing subdomain org is a real 404.
-    if (!org) {
-      return <OrgNotFound />
-    }
-  }
-
-  return (
-    <>
-      <Suspense fallback={<PageLoading />}>
-        <SignUpClient org={org} />
-      </Suspense>
-    </>
-  )
+const SignUp = () => {
+  redirect(WC_LOGIN_URL)
 }
 
 export default SignUp
