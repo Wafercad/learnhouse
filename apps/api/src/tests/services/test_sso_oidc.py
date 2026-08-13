@@ -182,6 +182,89 @@ async def test_provision_existing_user_adds_membership_exactly_once(
     assert memberships[0].role_id == 4
 
 
+def test_role_id_for_maps_wafercad_roles():
+    cfg = _cfg()  # default_role_id = 4
+    assert oidc._role_id_for("student", cfg) == 4
+    assert oidc._role_id_for("instructor", cfg) == 1
+    assert oidc._role_id_for("institution_admin", cfg) == 1
+    assert oidc._role_id_for("super_admin", cfg) == 1
+    assert oidc._role_id_for("Instructor", cfg) == 1  # case-insensitive
+    assert oidc._role_id_for("designer", cfg) == 4  # unknown role -> default
+    assert oidc._role_id_for(None, cfg) == 4  # absent claim -> default
+
+
+@pytest.mark.asyncio
+async def test_provision_new_instructor_is_elevated_to_admin(
+    db, org, user_role, admin_role, mock_request
+):
+    # create_user makes a role_id=4 membership; the RP then elevates it to Admin(1)
+    # for a Wafercad 'instructor'.
+    created = SimpleNamespace(email="prof@x.com", id=77)
+    with patch(f"{_MODULE}.create_user", new=AsyncMock(return_value=created)):
+        await oidc._provision_user(
+            _cfg(),
+            {"email": "prof@x.com", "sub": "u", "role": "instructor"},
+            org.slug,
+            mock_request,
+            db,
+        )
+    membership = (
+        await db.execute(
+            select(UserOrganization).where(
+                (UserOrganization.user_id == 77) & (UserOrganization.org_id == org.id)
+            )
+        )
+    ).scalars().first()
+    assert membership is not None and membership.role_id == 1
+
+
+@pytest.mark.asyncio
+async def test_provision_existing_user_syncs_role_on_login(
+    db, org, user_role, admin_role, mock_request
+):
+    # A student who becomes an instructor in Wafercad is re-synced to Admin in LH
+    # on the next login (fresh claims win).
+    db.add(
+        User(
+            id=60,
+            username="prof2",
+            first_name="P",
+            last_name="Q",
+            email="prof2@x.com",
+            password="",
+            user_uuid="user_prof2",
+            creation_date=str(datetime.now()),
+            update_date=str(datetime.now()),
+        )
+    )
+    db.add(
+        UserOrganization(
+            user_id=60,
+            org_id=org.id,
+            role_id=4,
+            creation_date=str(datetime.now()),
+            update_date=str(datetime.now()),
+        )
+    )
+    await db.commit()
+
+    await oidc._provision_user(
+        _cfg(),
+        {"email": "prof2@x.com", "role": "instructor"},
+        org.slug,
+        mock_request,
+        db,
+    )
+    membership = (
+        await db.execute(
+            select(UserOrganization).where(
+                (UserOrganization.user_id == 60) & (UserOrganization.org_id == org.id)
+            )
+        )
+    ).scalars().first()
+    assert membership.role_id == 1
+
+
 @pytest.mark.asyncio
 async def test_provision_rejects_missing_email(db, org, mock_request):
     with pytest.raises(oidc.OIDCError) as exc:

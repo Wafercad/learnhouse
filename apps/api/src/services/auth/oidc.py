@@ -44,6 +44,20 @@ from src.db.users import AnonymousUser, User, UserCreate, UserRead
 from src.security.auth import create_access_token, create_refresh_token
 from src.services.users.users import create_user
 
+# Wafercad role claim -> LearnHouse role_id. Federation is ONE-WAY (Wafercad is
+# the IdP), so an LH admin is never a Wafercad admin: a WCS 'instructor' authors
+# courses in LH only, and stays an ordinary user in WCS. Unknown/absent roles
+# fall back to the configured default (member). LH roles: 1=Admin, 2=Maintainer,
+# 4=member.
+_LH_ADMIN_ROLE_ID = 1
+_LH_MEMBER_ROLE_ID = 4
+_ROLE_CLAIM_TO_LH: dict[str, int] = {
+    "student": _LH_MEMBER_ROLE_ID,
+    "instructor": _LH_ADMIN_ROLE_ID,
+    "institution_admin": _LH_ADMIN_ROLE_ID,
+    "super_admin": _LH_ADMIN_ROLE_ID,
+}
+
 _STATE_PREFIX = "oidc:state:"
 _STATE_TTL_SECONDS = 600  # a login round-trip is short; expire dangling state
 _HTTP_TIMEOUT_SECONDS = 10.0
@@ -252,6 +266,7 @@ async def _provision_user(
         raise OIDCError("unknown_org", f"No Cloud Campus organization for '{org_slug}'.")
 
     given_name, family_name = _split_name(claims)
+    role_id = _role_id_for(claims.get("role"), cfg)
     existing = (
         await db_session.execute(select(User).where(func.lower(User.email) == email))
     ).scalars().first()
@@ -264,10 +279,10 @@ async def _provision_user(
             first_name=given_name,
             last_name=family_name,
         )
-        # create_user returns a UserRead (and provisions the role_id=4 membership
-        # + marks the OAuth user email-verified) — return it directly, as the
-        # Google JIT path does.
-        return await create_user(
+        # create_user provisions the user + a role_id=4 membership + marks the
+        # OAuth user email-verified. Then align the membership to the mapped role
+        # (a no-op for members; elevates instructors/admins).
+        created = await create_user(
             request,
             db_session,
             AnonymousUser(),
@@ -276,41 +291,58 @@ async def _provision_user(
             is_oauth=True,
             signup_provider="oidc",
         )
+        await _apply_membership(getattr(created, "id", None), org.id, role_id, db_session)
+        return created
 
-    await _ensure_membership(existing, org.id, cfg.default_role_id, db_session)
+    await _apply_membership(existing.id, org.id, role_id, db_session)
     return UserRead.model_validate(existing)
 
 
-async def _ensure_membership(
-    user: User,
+def _role_id_for(claim_role: object, cfg: OIDCConfig) -> int:
+    """Map the Wafercad role claim to a LearnHouse role_id (see _ROLE_CLAIM_TO_LH)."""
+    if not claim_role:
+        return cfg.default_role_id
+    return _ROLE_CLAIM_TO_LH.get(str(claim_role).strip().lower(), cfg.default_role_id)
+
+
+async def _apply_membership(
+    user_id: Optional[int],
     org_id: int,
     role_id: int,
     db_session: AsyncSession,
 ) -> None:
-    """Attach an existing user to the target org once (idempotent)."""
-    if user.id is None:
+    """Ensure the user's org membership exists AND carries the mapped role.
+
+    Idempotent, and it re-syncs the role on every login so a Wafercad role change
+    propagates to LearnHouse (fresh claims win — design §5.1)."""
+    if user_id is None:
         return
     membership = (
         await db_session.execute(
             select(UserOrganization).where(
-                (UserOrganization.user_id == user.id)
+                (UserOrganization.user_id == user_id)
                 & (UserOrganization.org_id == org_id)
             )
         )
     ).scalars().first()
-    if membership is not None:
-        return
     now = str(datetime.now(timezone.utc))
-    db_session.add(
-        UserOrganization(
-            user_id=user.id,
-            org_id=org_id,
-            role_id=role_id,
-            creation_date=now,
-            update_date=now,
+    if membership is None:
+        db_session.add(
+            UserOrganization(
+                user_id=user_id,
+                org_id=org_id,
+                role_id=role_id,
+                creation_date=now,
+                update_date=now,
+            )
         )
-    )
-    await db_session.commit()
+        await db_session.commit()
+        return
+    if int(membership.role_id) != role_id:
+        membership.role_id = role_id
+        membership.update_date = now
+        db_session.add(membership)
+        await db_session.commit()
 
 
 def _split_name(claims: dict) -> Tuple[str, str]:
