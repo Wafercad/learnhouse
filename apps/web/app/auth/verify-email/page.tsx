@@ -24,7 +24,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   return {
-    title: 'Verify Email' + ` — ${org?.name || 'LearnHouse'}`,
+    title: 'Verify Email' + ` — ${org?.name || 'Wafercad Cloud Campus'}`,
     robots: { index: false, follow: false },
   }
 }

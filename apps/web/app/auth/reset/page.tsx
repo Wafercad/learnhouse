@@ -24,7 +24,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   return {
-    title: 'Reset Password' + ` — ${org?.name || 'LearnHouse'}`,
+    title: 'Reset Password' + ` — ${org?.name || 'Wafercad Cloud Campus'}`,
     robots: { index: false, follow: false },
   }
 }

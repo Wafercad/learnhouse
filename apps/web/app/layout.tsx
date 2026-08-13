@@ -1,5 +1,6 @@
 import '../styles/globals.css'
 import React from 'react'
+import type { Metadata } from 'next'
 import Providers from '@components/Providers'
 import { Wix_Madefor_Text } from 'next/font/google'
 
@@ -8,6 +9,16 @@ const wixMadeforText = Wix_Madefor_Text({
   display: 'swap',
   variable: '--font-default',
 })
+
+// Brand every tab as Wafercad Cloud Campus. Pages that set their own title (e.g.
+// "Home — {org}") flow through the template and keep the brand as a suffix; pages
+// with no title fall back to the plain brand.
+export const metadata: Metadata = {
+  title: {
+    default: 'Wafercad Cloud Campus',
+    template: '%s · Wafercad Cloud Campus',
+  },
+}
 
 export default function RootLayout({
   children,
