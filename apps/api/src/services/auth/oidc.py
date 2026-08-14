@@ -230,7 +230,15 @@ def _validate_id_token(
         raise OIDCError("discovery_failed", "IdP discovery is missing jwks_uri")
     expected_issuer = document.get("issuer", cfg.issuer)
     try:
-        signing_key = jwt.PyJWKClient(jwks_uri).get_signing_key_from_jwt(id_token)
+        # PyJWKClient fetches the JWKS with urllib, whose default
+        # ``Python-urllib/x.y`` User-Agent is blocked (HTTP 403) by CDN/WAF bot
+        # protection (e.g. Cloudflare) that commonly fronts the IdP — the token
+        # and discovery calls use httpx and pass, so only this fetch fails. Send
+        # an explicit non-bot UA so the back-channel JWKS lookup is not challenged.
+        jwks_client = jwt.PyJWKClient(
+            jwks_uri, headers={"User-Agent": "learnhouse-oidc-rp/1.0"}
+        )
+        signing_key = jwks_client.get_signing_key_from_jwt(id_token)
         claims = jwt.decode(
             id_token,
             signing_key.key,
