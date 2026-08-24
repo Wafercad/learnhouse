@@ -545,12 +545,14 @@ export function SessionProvider({
     let isMounted = true
 
     const initSession = async () => {
-      // Skip entirely if no session marker — no httpOnly refresh token exists
-      if (!hasSessionMarker()) {
-        clearAuthState(false)
-        return
-      }
-
+      // A session can exist even when the marker is absent — the non-httpOnly
+      // marker may have been lost, or predate a fix, while the httpOnly refresh
+      // token is still valid. So a missing marker is NOT treated as definitive
+      // "signed out": we attempt one refresh regardless. For a genuinely
+      // anonymous visitor the BFF short-circuits to 401 without a backend
+      // round-trip, and for a marker-less-but-valid session the refresh returns
+      // a token AND re-asserts the marker (see setSessionMarkerCookie), so such
+      // sessions self-heal on the next load instead of hanging forever.
       setStatus('loading')
 
       // Try to restore session from refresh token
@@ -576,7 +578,7 @@ export function SessionProvider({
     return () => {
       isMounted = false
     }
-  }, [applySessionFromToken, clearAuthState, hasSessionMarker, refreshAccessToken])
+  }, [applySessionFromToken, clearAuthState, refreshAccessToken])
 
   // Set up refetch interval.
   //

@@ -4,10 +4,12 @@ import { getConfig } from '@services/config/config'
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
+  SESSION_MARKER_COOKIE,
   ACCESS_TOKEN_MAX_AGE,
   REFRESH_TOKEN_MAX_AGE,
   getDomainFromRequest,
   getCookieOptions,
+  setSessionMarkerCookie,
 } from '@services/auth/cookies'
 import { isLocalhost } from '@services/utils/ts/hostUtils'
 
@@ -68,7 +70,7 @@ const REFRESH_FAST_PATH_HEADROOM_MS = 2 * 60 * 1000
 // by anonymous visitors, and the proxy re-sets them on the very next request, so
 // clearing them is both pointless and would briefly break tenancy resolution.
 const CLEAR_HTTPONLY = [ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, 'LH_custom_domain']
-const CLEAR_MARKERS = ['LH_session', 'LH_org']
+const CLEAR_MARKERS = [SESSION_MARKER_COOKIE, 'LH_org']
 
 // A refresh failure only justifies destroying the session when the backend
 // rejected the CREDENTIAL itself. 401/403 are terminal — the refresh cookie is
@@ -196,10 +198,18 @@ async function proxyRequest(
   ) {
     const expiryMs = decodeJwtExpiryMs(accessToken.value)
     if (expiryMs && expiryMs - Date.now() > REFRESH_FAST_PATH_HEADROOM_MS) {
-      return NextResponse.json({
+      const response = NextResponse.json({
         access_token: accessToken.value,
         expiry: expiryMs,
       })
+      // The token cookie is still valid, so a session exists — (re)assert the
+      // marker. Without this the fast-path silently strands any session whose
+      // marker was lost while its tokens stayed valid: hasSessionMarker() reads
+      // false, the client never restores, and token-gated UI (e.g. the editor)
+      // hangs forever. Re-setting it here lets such sessions self-heal on the
+      // next refresh instead of requiring a manual re-login.
+      setSessionMarkerCookie(response, request)
+      return response
     }
   }
 
@@ -317,11 +327,7 @@ async function proxyRequest(
     // Set a non-httpOnly marker so the client knows a session exists
     // without making a network request (the actual tokens stay httpOnly)
     if (tokens.access_token || tokens.refresh_token) {
-      response.cookies.set('LH_session', '1', {
-        ...cookieOptions,
-        httpOnly: false,
-        maxAge: REFRESH_TOKEN_MAX_AGE,
-      })
+      setSessionMarkerCookie(response, request)
     }
   }
 

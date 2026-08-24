@@ -6,6 +6,7 @@ import {
   ACCESS_TOKEN_MAX_AGE,
   REFRESH_TOKEN_MAX_AGE,
   getCookieOptions,
+  setSessionMarkerCookie,
 } from '@services/auth/cookies'
 
 const BACKEND_URL = (getConfig('NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL') || 'http://localhost:1338').replace(/\/+$/, '')
@@ -278,11 +279,7 @@ export async function POST(request: NextRequest) {
       ...cookieOptions,
       maxAge: REFRESH_TOKEN_MAX_AGE,
     })
-    response.cookies.set('LH_session', '1', {
-      ...cookieOptions,
-      httpOnly: false,
-      maxAge: REFRESH_TOKEN_MAX_AGE,
-    })
+    setSessionMarkerCookie(response, request)
 
     return response
   } catch (err) {
