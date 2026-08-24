@@ -51,6 +51,45 @@ services:
       retries: 5
     networks: [lh]
 
+  # S3-compatible object store for LearnHouse content (course thumbnails,
+  # activity media, avatars). Durable across container rebuilds via its own
+  # volume — the filesystem content dir was ephemeral and lost media on every
+  # deploy. Internal-only (no published ports; reached over the compose network
+  # at http://minio:9000). Same s3api code path targets GCS/R2 in real prod;
+  # only endpoint/creds/bucket differ per environment. Credentials come from
+  # ../.env (MINIO_ROOT_USER from the overlay, MINIO_ROOT_PASSWORD from Secret
+  # Manager) and double as the api's AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    env_file:
+      - ../.env
+    volumes:
+      - lh_minio_data:/data
+    networks: [lh]
+
+  # One-shot: wait for MinIO, then create the content bucket (idempotent). The
+  # bucket stays private — the api streams objects through its authenticated
+  # /content route, so nothing is world-readable.
+  minio-setup:
+    image: minio/mc:latest
+    restart: "no"
+    env_file:
+      - ../.env
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        until mc alias set lh http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          echo 'waiting for minio...'; sleep 2;
+        done;
+        mc mb --ignore-existing "lh/$${LEARNHOUSE_S3_API_BUCKET_NAME}";
+        echo "bucket $${LEARNHOUSE_S3_API_BUCKET_NAME} ready"
+    depends_on:
+      - minio
+    networks: [lh]
+
   api:
     build:
       context: ../apps/api
@@ -73,6 +112,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     networks: [lh]
 
   web:
@@ -107,3 +148,4 @@ networks:
 volumes:
   lh_db_data:
   lh_redis_data:
+  lh_minio_data:

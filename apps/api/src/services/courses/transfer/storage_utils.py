@@ -92,6 +92,11 @@ def get_storage_client():
             region_name=region,
             config=botocore.config.Config(
                 signature_version="s3v4",
+                # Path-style addressing (bucket in the path, not the host):
+                # required by MinIO and GCS's S3 API, and accepted by R2/AWS.
+                # Without it botocore builds `<bucket>.<endpoint>` (virtual-host
+                # style), which fails DNS against an in-cluster MinIO endpoint.
+                s3={"addressing_style": "path"},
                 connect_timeout=10,
                 read_timeout=60,
                 retries={"max_attempts": 2},
