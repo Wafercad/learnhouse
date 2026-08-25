@@ -577,6 +577,17 @@ async def authorization_verify_api_token_permissions(
         'certifications', 'usergroups', 'payments', 'search', 'assignments'
     ]
 
+    # Wafercad Cloud Campus: a flagged service-integration token may also reach
+    # `trails` (so the campus BFF can manage a learner's progress on-behalf-of).
+    # Gated by the config flag so stock CE is unaffected; ordinary org tokens
+    # still cannot touch trails.
+    from config.config import get_learnhouse_config
+    if (
+        get_learnhouse_config().general_config.wafercad_service_integration_enabled
+        and getattr(api_token_user, "is_service_integration", False)
+    ):
+        allowed_resource_types = allowed_resource_types + ['trails']
+
     if element_type not in allowed_resource_types:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

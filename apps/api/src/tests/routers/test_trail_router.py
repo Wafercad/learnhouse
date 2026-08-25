@@ -9,8 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from src.core.events.database import get_db_session
 from src.db.trails import TrailRead
 from src.routers.trail import router as trail_router
-from src.security.auth import get_current_user
 from src.security.features_utils.dependencies import require_courses_feature
+from src.security.service_integration import resolve_effective_user
 
 
 @pytest.fixture
@@ -18,7 +18,9 @@ def app(db, admin_user):
     app = FastAPI()
     app.include_router(trail_router, prefix="/api/v1/trail")
     app.dependency_overrides[get_db_session] = lambda: db
-    app.dependency_overrides[get_current_user] = lambda: admin_user
+    # The trail endpoints now resolve their principal via resolve_effective_user
+    # (the on-behalf-of seam); with no header it returns the caller unchanged.
+    app.dependency_overrides[resolve_effective_user] = lambda: admin_user
     app.dependency_overrides[require_courses_feature] = lambda: True
     yield app
     app.dependency_overrides.clear()

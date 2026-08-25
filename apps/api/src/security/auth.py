@@ -722,6 +722,9 @@ async def validate_api_token(
         rights=rights,
         token_name=api_token.name,
         created_by_user_id=api_token.created_by_user_id,
+        is_service_integration=getattr(
+            api_token, "is_service_integration", False
+        ),
     )
 
 

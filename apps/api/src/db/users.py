@@ -143,6 +143,9 @@ class APITokenUser(SQLModel):
     rights: Optional[dict] = None  # Token's rights/permissions
     token_name: str = ""
     created_by_user_id: int = 0  # User who created the token
+    # Wafercad Cloud Campus service-integration token (may reach trails + act
+    # on-behalf-of). False for ordinary org tokens.
+    is_service_integration: bool = False
 
 
 class SuperadminAPITokenUser(SQLModel):
