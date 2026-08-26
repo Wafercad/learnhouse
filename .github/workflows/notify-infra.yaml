@@ -21,7 +21,7 @@ concurrency:
 jobs:
   notify:
     name: Dispatch to Infrastructure Repo
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, devstack]
     # Dispatch only where the receiving side can act on it:
     #
     #   forks   — GitHub does not expose secrets (INFRA_REPO_PAT) to fork PRs,
