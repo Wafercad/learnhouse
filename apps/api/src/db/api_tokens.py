@@ -36,6 +36,10 @@ class APIToken(APITokenBase, table=True):
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None  # None = never expires
     is_active: bool = Field(default=True)  # False = revoked
+    # Wafercad Cloud Campus: a flagged token that may reach `trails` and act on
+    # behalf of a named user in its org (X-On-Behalf-Of-User). Default false =
+    # ordinary org token. Gated by WAFERCAD_SERVICE_INTEGRATION_ENABLED.
+    is_service_integration: bool = Field(default=False)
 
 
 class APITokenCreate(BaseModel):

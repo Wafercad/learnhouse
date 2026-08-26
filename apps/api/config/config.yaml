@@ -7,6 +7,10 @@ contact_email: hi@learnhouse.app
 general:
   # SECURITY: default to production-safe; enable with LEARNHOUSE_DEVELOPMENT_MODE=true for local dev.
   development_mode: false
+  # Wafercad Cloud Campus: the service-integration token (on-behalf-of trail
+  # access for the campus BFF). Off = stock CE. Enable in WCC deployments with
+  # WAFERCAD_SERVICE_INTEGRATION_ENABLED=true. See docs/WAFERCAD_SERVICE_INTEGRATION_TOKEN.md.
+  wafercad_service_integration_enabled: false
 
 security:
   # SECURITY: Set via LEARNHOUSE_AUTH_JWT_SECRET_KEY env var (required, min 32 chars).

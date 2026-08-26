@@ -44,6 +44,7 @@ class GeneralConfig(BaseModel):
     sentry_config: SentryConfig
     saas_mode: bool
     env: str
+    wafercad_service_integration_enabled: bool = False
 
 
 class SecurityConfig(BaseModel):
@@ -202,6 +203,17 @@ def get_learnhouse_config() -> LearnHouseConfig:
     saas_mode = (
         env_saas_mode.lower() in ("true", "1", "yes") if env_saas_mode != "None"
         else yaml_config.get("general", {}).get("saas_mode", False)
+    )
+
+    # Wafercad Cloud Campus: enable the service-integration token (flagged API
+    # token + on-behalf-of trail access for the campus BFF). Default false =
+    # stock Community-Edition behaviour (the flag/allowlist/dependency are inert).
+    env_wafercad_si = os.environ.get("WAFERCAD_SERVICE_INTEGRATION_ENABLED", "None")
+    wafercad_service_integration_enabled = (
+        env_wafercad_si.lower() in ("true", "1", "yes") if env_wafercad_si != "None"
+        else yaml_config.get("general", {}).get(
+            "wafercad_service_integration_enabled", False
+        )
     )
 
     # Security Config
@@ -670,6 +682,9 @@ def get_learnhouse_config() -> LearnHouseConfig:
             sentry_config=SentryConfig(dsn=sentry_dsn),
             saas_mode=bool(saas_mode),
             env=learnhouse_env,
+            wafercad_service_integration_enabled=bool(
+                wafercad_service_integration_enabled
+            ),
         ),
         hosting_config=hosting_config,
         database_config=database_config,

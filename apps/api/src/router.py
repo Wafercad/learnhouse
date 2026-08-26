@@ -43,6 +43,7 @@ from src.security.api_token_utils import (
     require_authenticated_user_or_api_token,
     require_non_api_token_user,
 )
+from src.security.service_integration import require_trail_principal
 from src.security.features_utils.plan_check import require_plan, require_plan_for_boards, require_plan_for_certifications, require_plan_for_community, require_plan_for_usergroups, require_plan_for_playgrounds
 
 
@@ -252,7 +253,9 @@ v1_router.include_router(
     trail.router,
     prefix="/trail",
     tags=["trail"],
-    dependencies=[Depends(require_authenticated_user)]
+    # Flag-aware gate: admits the campus service token ONLY when the feature is
+    # on; otherwise identical to require_authenticated_user (blocks API tokens).
+    dependencies=[Depends(require_trail_principal)]
 )
 v1_router.include_router(
     ai.router,

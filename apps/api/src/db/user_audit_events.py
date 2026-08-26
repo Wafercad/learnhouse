@@ -46,6 +46,11 @@ class UserAuditEventType:
     # Achievements
     CERTIFICATE_CLAIMED = "certificate_claimed"
 
+    # Wafercad Cloud Campus: a service-integration token acted on behalf of this
+    # learner (the "campus acted as learner X" trail). subject = user_id; the
+    # actor token id/name is in audit_metadata.
+    SERVICE_ON_BEHALF = "service_on_behalf"
+
     # NOTE: code submissions and community participation (discussions, comments,
     # votes, reactions) are NOT mirrored here — their own tables are already
     # append-only and permanent, so the dossier reads them directly.

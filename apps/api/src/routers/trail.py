@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from src.core.events.database import get_db_session
 from src.db.trails import TrailCreate, TrailRead
-from src.security.auth import get_current_user
+from src.security.service_integration import resolve_effective_user
 from src.security.features_utils.dependencies import require_courses_feature
 from src.services.trail.trail import (
     Trail,
@@ -33,7 +33,7 @@ router = APIRouter(dependencies=[Depends(require_courses_feature)])
 async def api_start_trail(
     request: Request,
     trail_object: TrailCreate,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> Trail:
     """
@@ -55,7 +55,7 @@ async def api_start_trail(
 )
 async def api_get_user_trail(
     request: Request,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
@@ -79,7 +79,7 @@ async def api_get_user_trail(
 async def api_get_trail_by_org_id(
     request: Request,
     org_id: int,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
@@ -105,7 +105,7 @@ async def api_get_trail_by_org_id(
 async def api_add_course_to_trail(
     request: Request,
     course_uuid: str,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
@@ -129,7 +129,7 @@ async def api_add_course_to_trail(
 async def api_remove_course_to_trail(
     request: Request,
     course_uuid: str,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
@@ -153,7 +153,7 @@ async def api_remove_course_to_trail(
 async def api_add_activity_to_trail(
     request: Request,
     activity_uuid: str,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
@@ -179,7 +179,7 @@ async def api_add_activity_to_trail(
 async def api_remove_activity_from_trail(
     request: Request,
     activity_uuid: str,
-    user=Depends(get_current_user),
+    user=Depends(resolve_effective_user),
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
