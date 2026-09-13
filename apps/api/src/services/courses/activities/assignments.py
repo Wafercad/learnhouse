@@ -1459,8 +1459,12 @@ async def put_assignment_task_submission_file(
     assignment_task_uuid: str,
     current_user: PublicUser | AnonymousUser | APITokenUser,
     sub_file: UploadFile | None = None,
+    on_behalf_of_user_id: int | None = None,
 ):
-    _block_api_tokens(current_user)
+    # NOTE: the API-token block moved BELOW the course lookup. Submit-on-behalf
+    # needs the course to authorize the token (assignments.create, scoped to the
+    # course's org), exactly as the task-ANSWER path does. A token that does not
+    # resolve to a learner is still blocked outright.
     # Check if assignment task exists
     statement = select(AssignmentTask).where(
         AssignmentTask.assignment_task_uuid == assignment_task_uuid
@@ -1501,27 +1505,40 @@ async def put_assignment_task_submission_file(
     org_statement = select(Organization).where(Organization.id == course.org_id)
     org = (await db_session.execute(org_statement)).scalars().first()
 
-    # RBAC check - only need read permission to submit files
-    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
-
-    # Check if user is enrolled in the course
-    if not await authorization_verify_based_on_roles(request, current_user.id, "read", course.course_uuid, db_session):
-        raise HTTPException(
-            status_code=403,
-            detail="You must be enrolled in this course to submit files"
-        )
-
-    # Enforce the submission deadline for student sessions, matching the
-    # task-submission and submit-for-grading write paths (file uploads bypassed
-    # it, letting a student attach files after the deadline). Instructors exempt.
-    is_instructor = await authorization_verify_based_on_roles(
-        request, current_user.id, "update", course.course_uuid, db_session
+    # Resolve who the upload is for. API tokens upload on behalf of a learner
+    # (assignments.create + explicit on_behalf_of_user_id); sessions act as self.
+    # This mirrors handle_assignment_task_submission: the answer and the file that
+    # answer points at MUST be writable by the same callers, or a custom frontend
+    # can store an answer naming a file it was never allowed to upload.
+    token_submitter = await _resolve_token_submission_user(
+        request, db_session, current_user, course, on_behalf_of_user_id
     )
-    if not is_instructor and _is_assignment_past_due(assignment):
-        raise HTTPException(
-            status_code=403,
-            detail="Assignment deadline has passed",
+    if token_submitter is None:
+        _block_api_tokens(current_user)
+
+        # RBAC check - only need read permission to submit files
+        await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+
+        # Check if user is enrolled in the course
+        if not await authorization_verify_based_on_roles(request, current_user.id, "read", course.course_uuid, db_session):
+            raise HTTPException(
+                status_code=403,
+                detail="You must be enrolled in this course to submit files"
+            )
+
+        # Enforce the submission deadline for student sessions, matching the
+        # task-submission and submit-for-grading write paths (file uploads bypassed
+        # it, letting a student attach files after the deadline). Instructors exempt.
+        # A token acting for a learner is an authorized external writer — the custom
+        # frontend owns enrollment/deadline, the same trade the answer path makes.
+        is_instructor = await authorization_verify_based_on_roles(
+            request, current_user.id, "update", course.course_uuid, db_session
         )
+        if not is_instructor and _is_assignment_past_due(assignment):
+            raise HTTPException(
+                status_code=403,
+                detail="Assignment deadline has passed",
+            )
 
     # Upload submission file
     if sub_file and sub_file.filename and activity and org:

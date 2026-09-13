@@ -38,6 +38,7 @@ from src.services.courses.activities.assignments import (
     create_assignment_submission,
     grade_assignment_submission,
     handle_assignment_task_submission,
+    put_assignment_task_submission_file,
     read_assignment,
     read_assignment_submissions,
     retry_assignment_submission,
@@ -55,6 +56,12 @@ _PATCH_DISPATCH = "src.services.courses.activities.assignments.dispatch_webhooks
 _PATCH_LIMITS = "src.services.courses.activities.assignments.check_limits_with_usage"
 _PATCH_INCREASE = "src.services.courses.activities.assignments.increase_feature_usage"
 _PATCH_DISPATCH = "src.services.courses.activities.assignments.dispatch_webhooks"
+_PATCH_UPLOAD = "src.services.courses.activities.assignments.upload_submission_file"
+_PATCH_RBAC = "src.services.courses.activities.assignments.check_resource_access"
+_PATCH_ROLES = (
+    "src.services.courses.activities.assignments."
+    "authorization_verify_based_on_roles"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,26 @@ def _token(org_id=1, **buckets):
         token_name="Test Token",
         created_by_user_id=1,
     )
+
+
+def _roles(*, read: bool, update: bool):
+    """Patch ``authorization_verify_based_on_roles`` per ACTION.
+
+    The submission-file path asks twice with different actions — "read" for
+    enrolment and "update" for instructor exemption — so a single return value
+    cannot express "enrolled student".
+    """
+    async def _verify(request, user_id, action, course_uuid, db_session):
+        return read if action == "read" else update
+
+    return _verify
+
+
+class _FakeUpload:
+    """The two attributes the submission-file path reads off an UploadFile."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
 
 
 async def _make_assignment(db, org, course, chapter, activity, *, auto_grading=False):
@@ -430,3 +457,191 @@ class TestSessionOnlyEndpointsStillBlockTokens:
                 mock_request, "assignment_token_test", token, db
             )
         assert exc.value.status_code == 403
+
+
+class TestTokenSubmitFileOnBehalf:
+    """A token with assignments.create may upload a learner's SUBMISSION FILE.
+
+    The answer write and the file that answer names must be reachable by the same
+    callers: a custom frontend that can store ``{"fileUUID": ...}`` but cannot
+    upload the file would store an answer pointing at nothing. These mirror
+    :class:`TestTokenSubmitOnBehalf` case for case.
+    """
+
+    async def _seed_task(self, db, org, course, chapter, activity):
+        assignment = await _make_assignment(db, org, course, chapter, activity)
+        task = AssignmentTask(
+            title="Essay", description="d", hint="", reference_file=None,
+            assignment_type=AssignmentTaskTypeEnum.FILE_SUBMISSION, contents={},
+            max_grade_value=100, assignment_id=assignment.id, org_id=org.id,
+            course_id=course.id, chapter_id=chapter.id, activity_id=activity.id,
+            assignment_task_uuid="assignmenttask_file_obo",
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        )
+        db.add(task)
+        await db.commit()
+        return assignment, task
+
+    async def test_token_uploads_file_for_learner(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        await self._seed_task(db, org, course, chapter, activity)
+        token = _token(assignments=_assignments_rights(create=True))
+        upload = AsyncMock(return_value="uuid_submission.pdf")
+        with patch(_PATCH_UPLOAD, upload):
+            result = await put_assignment_task_submission_file(
+                mock_request, db, "assignmenttask_file_obo", token,
+                _FakeUpload("essay.pdf"),
+                on_behalf_of_user_id=regular_user.id,
+            )
+        assert result == {"file_uuid": "uuid_submission.pdf"}
+        assert upload.await_count == 1
+
+    async def test_token_upload_requires_on_behalf_id(
+        self, mock_request, db, org, course, chapter, activity
+    ):
+        await self._seed_task(db, org, course, chapter, activity)
+        token = _token(assignments=_assignments_rights(create=True))
+        with patch(_PATCH_UPLOAD, AsyncMock()) as upload:
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", token,
+                    _FakeUpload("essay.pdf"),
+                )
+        assert exc.value.status_code == 400
+        assert upload.await_count == 0
+
+    async def test_token_upload_without_create_right_forbidden(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        await self._seed_task(db, org, course, chapter, activity)
+        token = _token(assignments=_assignments_rights(read=True))  # no create
+        with patch(_PATCH_UPLOAD, AsyncMock()) as upload:
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", token,
+                    _FakeUpload("essay.pdf"),
+                    on_behalf_of_user_id=regular_user.id,
+                )
+        assert exc.value.status_code == 403
+        assert upload.await_count == 0
+
+    async def test_token_upload_for_non_member_forbidden(
+        self, mock_request, db, org, course, chapter, activity
+    ):
+        await self._seed_task(db, org, course, chapter, activity)
+        outsider = User(
+            id=998, username="outsider_file", first_name="O", last_name="O",
+            email="outsider_file@x.com", password="x", user_uuid="user_outsider_file",
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        )
+        db.add(outsider)
+        await db.commit()
+        token = _token(assignments=_assignments_rights(create=True))
+        with patch(_PATCH_UPLOAD, AsyncMock()):
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", token,
+                    _FakeUpload("essay.pdf"),
+                    on_behalf_of_user_id=outsider.id,
+                )
+        assert exc.value.status_code == 403
+
+    async def test_token_upload_unknown_learner_404(
+        self, mock_request, db, org, course, chapter, activity
+    ):
+        await self._seed_task(db, org, course, chapter, activity)
+        token = _token(assignments=_assignments_rights(create=True))
+        with patch(_PATCH_UPLOAD, AsyncMock()):
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", token,
+                    _FakeUpload("essay.pdf"),
+                    on_behalf_of_user_id=999998,
+                )
+        assert exc.value.status_code == 404
+
+    async def test_token_upload_is_not_blocked_by_a_passed_deadline(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        """The answer path already exempts token writes; the file must match, or a
+        learner's answers land and their attachment is refused mid-submission."""
+        assignment, _ = await self._seed_task(db, org, course, chapter, activity)
+        assignment.due_date = "2000-01-01"
+        db.add(assignment)
+        await db.commit()
+        token = _token(assignments=_assignments_rights(create=True))
+        with patch(_PATCH_UPLOAD, AsyncMock(return_value="late.pdf")):
+            result = await put_assignment_task_submission_file(
+                mock_request, db, "assignmenttask_file_obo", token,
+                _FakeUpload("essay.pdf"),
+                on_behalf_of_user_id=regular_user.id,
+            )
+        assert result == {"file_uuid": "late.pdf"}
+
+    async def test_session_student_not_enrolled_is_forbidden(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        """The session gates are untouched by the on-behalf branch."""
+        await self._seed_task(db, org, course, chapter, activity)
+        with patch(_PATCH_RBAC, new_callable=AsyncMock), \
+             patch(_PATCH_ROLES, new_callable=AsyncMock, return_value=False), \
+             patch(_PATCH_UPLOAD, AsyncMock()) as upload:
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", regular_user,
+                    _FakeUpload("essay.pdf"),
+                )
+        assert exc.value.status_code == 403
+        assert "enrolled" in exc.value.detail
+        assert upload.await_count == 0
+
+    async def test_session_student_still_blocked_by_a_passed_deadline(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        """Enrolled, not an instructor, past due — the deadline still applies."""
+        assignment, _ = await self._seed_task(db, org, course, chapter, activity)
+        assignment.due_date = "2000-01-01"
+        db.add(assignment)
+        await db.commit()
+        with patch(_PATCH_RBAC, new_callable=AsyncMock), \
+             patch(_PATCH_ROLES, _roles(read=True, update=False)), \
+             patch(_PATCH_UPLOAD, AsyncMock()) as upload:
+            with pytest.raises(HTTPException) as exc:
+                await put_assignment_task_submission_file(
+                    mock_request, db, "assignmenttask_file_obo", regular_user,
+                    _FakeUpload("essay.pdf"),
+                )
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "Assignment deadline has passed"
+        assert upload.await_count == 0
+
+    async def test_404_when_the_assignment_row_is_missing(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        _, task = await self._seed_task(db, org, course, chapter, activity)
+        task.assignment_id = 987654
+        db.add(task)
+        await db.commit()
+        with pytest.raises(HTTPException) as exc:
+            await put_assignment_task_submission_file(
+                mock_request, db, "assignmenttask_file_obo", regular_user,
+                _FakeUpload("essay.pdf"),
+            )
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Assignment not found"
+
+    async def test_404_when_the_course_row_is_missing(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        assignment, _ = await self._seed_task(db, org, course, chapter, activity)
+        assignment.course_id = 987654
+        db.add(assignment)
+        await db.commit()
+        with pytest.raises(HTTPException) as exc:
+            await put_assignment_task_submission_file(
+                mock_request, db, "assignmenttask_file_obo", regular_user,
+                _FakeUpload("essay.pdf"),
+            )
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Course not found"
