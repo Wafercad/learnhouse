@@ -355,14 +355,24 @@ async def api_put_assignment_task_sub_file(
     request: Request,
     assignment_task_uuid: str,
     sub_file: UploadFile | None = None,
+    on_behalf_of_user_id: int | None = None,
     current_user: PublicUser = Depends(get_current_user),
     db_session=Depends(get_db_session),
 ):
     """
-    Update tasks for an assignment
+    Upload a learner's submission file for one assignment task.
+
+    A session uploads its own; a service-integration token with
+    ``assignments.create`` may upload for a learner by passing
+    ``on_behalf_of_user_id`` (the same seam the answer write uses).
     """
     return await put_assignment_task_submission_file(
-        request, db_session, assignment_task_uuid, current_user, sub_file
+        request,
+        db_session,
+        assignment_task_uuid,
+        current_user,
+        sub_file,
+        on_behalf_of_user_id=on_behalf_of_user_id,
     )
 
 
