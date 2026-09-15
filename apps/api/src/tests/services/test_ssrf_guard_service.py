@@ -154,3 +154,114 @@ def test_assert_connected_peer_allowed_accepts_ipv4_mapped_peer():
     response = _response_with_peer(("::ffff:93.184.216.34", 443))
 
     assert_connected_peer_allowed(response, {"93.184.216.34"})
+
+
+# ---------------------------------------------------------------------------
+# allow_hosts — the narrow opt-in for an internal webhook destination.
+# ---------------------------------------------------------------------------
+
+
+def _resolving_to(address):
+    return patch(
+        "src.services.utils.ssrf_guard.socket.getaddrinfo",
+        return_value=[(None, None, None, None, (address, 443))],
+    )
+
+
+def test_allow_hosts_permits_a_named_private_destination():
+    with _resolving_to("172.18.0.7"):
+        validated = resolve_and_validate_url(
+            "http://campus_service:8010/hook",
+            allow_hosts=frozenset({"campus_service"}),
+        )
+
+    assert validated == {"172.18.0.7"}
+
+
+def test_an_allowlisted_private_peer_is_accepted_at_connect_time():
+    """The exemption has to hold at BOTH ends: without it the peer check refuses
+    the very address the allowlist just approved, and delivery fails AFTER the
+    request instead of before it."""
+    with _resolving_to("172.18.0.7"):
+        validated = resolve_and_validate_url(
+            "http://campus_service:8010/hook",
+            allow_hosts=frozenset({"campus_service"}),
+        )
+
+    assert_connected_peer_allowed(
+        _response_with_peer(("172.18.0.7", 8010)),
+        validated,
+        allow_private=True,
+    )
+
+
+def test_rebinding_is_still_caught_for_an_allowlisted_host():
+    """`allow_private` relaxes the RANGE check only — membership in the
+    validated set is still the guarantee, so a host that resolves somewhere else
+    between validation and connect is refused."""
+    with _resolving_to("172.18.0.7"):
+        validated = resolve_and_validate_url(
+            "http://campus_service:8010/hook",
+            allow_hosts=frozenset({"campus_service"}),
+        )
+
+    with pytest.raises(SSRFBlockedError, match="DNS rebinding detected"):
+        assert_connected_peer_allowed(
+            _response_with_peer(("172.18.0.99", 8010)),
+            validated,
+            allow_private=True,
+        )
+
+
+def test_a_private_peer_is_still_refused_without_the_opt_in():
+    with pytest.raises(SSRFBlockedError, match="blocked peer IP"):
+        assert_connected_peer_allowed(
+            _response_with_peer(("172.18.0.7", 8010)),
+            {"172.18.0.7"},
+        )
+
+
+def test_allow_hosts_does_not_exempt_a_host_it_does_not_name():
+    with _resolving_to("10.0.0.4"):
+        with pytest.raises(SSRFBlockedError, match="blocked address range"):
+            resolve_and_validate_url(
+                "http://other-service:8010/hook",
+                allow_hosts=frozenset({"campus_service"}),
+            )
+
+
+def test_allow_hosts_can_exempt_localhost():
+    with _resolving_to("127.0.0.1"):
+        validated = resolve_and_validate_url(
+            "http://localhost:8010/hook",
+            allow_hosts=frozenset({"localhost"}),
+        )
+
+    assert validated == {"127.0.0.1"}
+
+
+def test_allow_hosts_can_never_exempt_cloud_metadata():
+    """The one host an operator must not be able to talk themselves into."""
+    with pytest.raises(SSRFBlockedError, match="Blocked hostname"):
+        resolve_and_validate_url(
+            "http://metadata.google.internal/computeMetadata/v1/",
+            allow_hosts=frozenset({"metadata.google.internal"}),
+        )
+
+
+def test_allow_hosts_matching_is_case_insensitive():
+    with _resolving_to("172.18.0.7"):
+        validated = resolve_and_validate_url(
+            "http://Campus_Service:8010/hook",
+            allow_hosts=frozenset({"CAMPUS_SERVICE"}),
+        )
+
+    assert validated == {"172.18.0.7"}
+
+
+def test_the_default_is_unchanged_behaviour():
+    """Every existing caller passes no allowlist and must keep refusing private
+    addresses — this is what makes the change safe for link previews."""
+    with _resolving_to("192.168.1.10"):
+        with pytest.raises(SSRFBlockedError, match="blocked address range"):
+            resolve_and_validate_url("http://internal.example.com/x")

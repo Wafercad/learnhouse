@@ -8,9 +8,11 @@ Mirrors the analytics ``track()`` pattern: wraps work in
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -39,6 +41,25 @@ MAX_ATTEMPTS = 3
 # Exponential backoff delays in seconds: 1, 4, 16
 BACKOFF_DELAYS = [1, 4, 16]
 LOG_RETENTION_PER_ENDPOINT = 200
+
+# Hostnames this deployment may deliver webhooks to even though they resolve to a
+# private address. Comma-separated, empty by default, so a stock install keeps
+# refusing every private destination.
+#
+# Needed because a self-hosted LearnHouse and the service consuming its events
+# are usually siblings on one internal network — a container name, a
+# `*.internal` record, `localhost` — and the SSRF guard correctly refuses all of
+# those. Listing the one destination you run is narrower than the alternatives
+# (turning the guard off, or routing an internal call out through the public
+# internet and back), and it applies HERE ONLY: link previews and custom-domain
+# checks take user-supplied URLs and are untouched.
+_ALLOWED_PRIVATE_HOSTS_ENV = "LEARNHOUSE_WEBHOOK_ALLOWED_PRIVATE_HOSTS"
+
+
+def _allowed_private_hosts() -> frozenset[str]:
+    """Parse the allowlist on each delivery, so a config change needs no restart."""
+    raw = os.environ.get(_ALLOWED_PRIVATE_HOSTS_ENV, "")
+    return frozenset(host.strip().lower() for host in raw.split(",") if host.strip())
 
 
 def _get_webhook_client() -> httpx.AsyncClient:
@@ -206,11 +227,25 @@ async def _deliver_to_endpoint(
             # SSRF guard: resolve DNS, verify all returned IPs are public,
             # then after the request verify the peer we actually connected
             # to was one of the approved IPs (defeats DNS rebinding).
-            validated_ips = resolve_and_validate_url(ep.url)
+            # A host named in the deployment's allowlist may be private; the
+            # SAME allowance has to reach the peer check below, or the delivery
+            # is refused after the request instead of before it.
+            allowed_private = _allowed_private_hosts()
+            validated_ips = resolve_and_validate_url(
+                ep.url,
+                allow_hosts=allowed_private,
+            )
+            is_private_destination = (
+                urlparse(ep.url).hostname or ""
+            ).lower() in allowed_private
 
             resp = await client.post(ep.url, content=payload_bytes, headers=headers)
             try:
-                assert_connected_peer_allowed(resp, validated_ips)
+                assert_connected_peer_allowed(
+                    resp,
+                    validated_ips,
+                    allow_private=is_private_destination,
+                )
             except SSRFBlockedError as ssrf_exc:
                 log_entry.success = False
                 log_entry.error_message = f"SSRF guard: {ssrf_exc}"[:1000]

@@ -566,3 +566,37 @@ class TestWebhookDispatchHelpers:
             )
         ).scalars().all()
         assert len(remaining) == 1
+
+
+# ---------------------------------------------------------------------------
+# The private-destination allowlist. A self-hosted install and its webhook
+# consumer are usually siblings on one internal network, which the SSRF guard
+# correctly refuses; this names the one destination an operator actually runs.
+# ---------------------------------------------------------------------------
+
+
+def test_no_allowlist_is_configured_by_default(monkeypatch):
+    """A stock install must keep refusing every private destination."""
+    monkeypatch.delenv("LEARNHOUSE_WEBHOOK_ALLOWED_PRIVATE_HOSTS", raising=False)
+
+    assert dispatch._allowed_private_hosts() == frozenset()
+
+
+def test_the_allowlist_is_parsed_and_lowercased(monkeypatch):
+    monkeypatch.setenv(
+        "LEARNHOUSE_WEBHOOK_ALLOWED_PRIVATE_HOSTS",
+        "Campus_Service, 127.0.0.1",
+    )
+
+    assert dispatch._allowed_private_hosts() == frozenset(
+        {"campus_service", "127.0.0.1"},
+    )
+
+
+@pytest.mark.parametrize("raw", ["", "   ", ",", " , ,"])
+def test_a_blank_allowlist_names_nothing(monkeypatch, raw):
+    """An empty-ish value must not produce an empty-string entry, which would
+    then match a URL with no hostname."""
+    monkeypatch.setenv("LEARNHOUSE_WEBHOOK_ALLOWED_PRIVATE_HOSTS", raw)
+
+    assert dispatch._allowed_private_hosts() == frozenset()
