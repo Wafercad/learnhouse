@@ -35,11 +35,16 @@ async def test_install_default_elements_creates_and_updates_roles(db):
 
     roles = (await db.execute(select(Role).order_by(Role.id))).scalars().all()
 
-    assert [role.id for role in roles] == [1, 2, 3, 4]
+    assert [role.id for role in roles] == [1, 2, 3, 4, 5]
     assert roles[0].name == "Admin"
     assert roles[0].role_uuid == "role_global_admin"
     assert roles[0].rights["dashboard"]["action_access"] is True
     assert roles[3].name == "User"
+    # Course Author: authors the catalogue org-wide, governs nothing.
+    assert roles[4].name == "Course Author"
+    assert roles[4].role_uuid == "role_global_course_author"
+    assert roles[4].rights["courses"]["action_update"] is True
+    assert roles[4].rights["roles"]["action_create"] is False
 
 
 @pytest.mark.asyncio

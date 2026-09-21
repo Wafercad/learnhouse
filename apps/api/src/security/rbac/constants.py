@@ -13,6 +13,12 @@ Role Hierarchy:
 # Core role IDs - these match the database seed data
 ADMIN_ROLE_ID = 1
 MAINTAINER_ROLE_ID = 2
+INSTRUCTOR_ROLE_ID = 3
+USER_ROLE_ID = 4
+# Authors the course catalogue org-wide, with no users/roles/organization
+# rights. Seeded global (see services/setup), so the id is the same in every
+# deployment and an integration can name it without per-org configuration.
+COURSE_AUTHOR_ROLE_ID = 5
 
 # Role ID sets for common checks
 ADMIN_ROLE_IDS = frozenset([ADMIN_ROLE_ID])

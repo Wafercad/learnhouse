@@ -385,6 +385,126 @@ async def install_default_elements(db_session: AsyncSession):
         update_date=str(datetime.now()),
     )
 
+    role_global_course_author = Role(
+        name="Course Author",
+        description="Authors the course catalogue for the whole organization",
+        id=5,
+        role_type=RoleTypeEnum.TYPE_GLOBAL,
+        role_uuid="role_global_course_author",
+        rights=Rights(
+            courses=PermissionsWithOwn(
+                action_create=True,
+                action_read=True,
+                action_read_own=True,
+                action_update=True,
+                action_update_own=True,
+                action_delete=True,
+                action_delete_own=True,
+            ),
+            users=Permission(
+                action_create=False,
+                action_read=False,
+                action_update=False,
+                action_delete=False,
+            ),
+            usergroups=Permission(
+                action_create=False,
+                action_read=True,
+                action_update=False,
+                action_delete=False,
+            ),
+            folders=Permission(
+                action_create=True,
+                action_read=True,
+                action_update=True,
+                action_delete=True,
+            ),
+            media=Permission(
+                action_create=True,
+                action_read=True,
+                action_update=True,
+                action_delete=True,
+            ),
+            organizations=Permission(
+                action_create=False,
+                action_read=False,
+                action_update=False,
+                action_delete=False,
+            ),
+            coursechapters=Permission(
+                action_create=True,
+                action_read=True,
+                action_update=True,
+                action_delete=True,
+            ),
+            activities=Permission(
+                action_create=True,
+                action_read=True,
+                action_update=True,
+                action_delete=True,
+            ),
+            assignments=Permission(
+                action_create=True,
+                action_read=True,
+                action_update=True,
+                action_delete=True,
+            ),
+            roles=Permission(
+                action_create=False,
+                action_read=False,
+                action_update=False,
+                action_delete=False,
+            ),
+            dashboard=DashboardPermission(
+                action_access=True,
+            ),
+            communities=Permission(
+                action_create=False,
+                action_read=True,
+                action_update=False,
+                action_delete=False,
+            ),
+            discussions=PermissionsWithOwn(
+                action_create=True,
+                action_read=True,
+                action_read_own=True,
+                action_update=False,
+                action_update_own=True,
+                action_delete=False,
+                action_delete_own=True,
+            ),
+            podcasts=PermissionsWithOwn(
+                action_create=True,
+                action_read=True,
+                action_read_own=True,
+                action_update=False,
+                action_update_own=True,
+                action_delete=False,
+                action_delete_own=True,
+            ),
+            boards=PermissionsWithOwn(
+                action_create=True,
+                action_read=True,
+                action_read_own=True,
+                action_update=False,
+                action_update_own=True,
+                action_delete=False,
+                action_delete_own=True,
+            ),
+            playgrounds=PermissionsWithOwn(
+                action_create=True,
+                action_read=True,
+                action_read_own=True,
+                action_update=False,
+                action_update_own=True,
+                action_delete=False,
+                action_delete_own=True,
+            ),
+        ),
+        creation_date=str(datetime.now()),
+        update_date=str(datetime.now()),
+    )
+
     role_global_user = Role(
         name="User",
         description="Read-Only Learner",
@@ -506,7 +626,13 @@ async def install_default_elements(db_session: AsyncSession):
     )
 
     # Serialize rights to JSON
-    desired_roles = [role_global_admin, role_global_maintainer, role_global_instructor, role_global_user]
+    desired_roles = [
+        role_global_admin,
+        role_global_maintainer,
+        role_global_instructor,
+        role_global_user,
+        role_global_course_author,
+    ]
     for role in desired_roles:
         role.rights = role.rights.model_dump()  # type: ignore
 

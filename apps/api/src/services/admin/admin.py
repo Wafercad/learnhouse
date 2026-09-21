@@ -120,6 +120,11 @@ _ROLE_PRIORITY = {
     ADMIN_ROLE_ID: 0,
     MAINTAINER_ROLE_ID: 1,
     3: 2,
+    # Course Author: authors the catalogue, but holds no users/roles/org rights,
+    # so it sits level with Instructor rather than above it. Listed explicitly
+    # even though the default is already 2 — a role an integration is expected
+    # to assign should not depend on a fallback to stay assignable.
+    5: 2,
     4: 3,
 }
 _DEFAULT_ROLE_PRIORITY = 2
