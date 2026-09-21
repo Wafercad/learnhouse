@@ -16,6 +16,9 @@ async def auto_install():
     Bootstrap a brand-new deployment (no orgs yet) and refresh the global
     default roles on every boot.
 
+    The refresh is how a new seeded role reaches an existing deployment: there
+    is no migration for role rows, so restarting the API IS the install step.
+
     Both steps run on the application engine (``_async_session_factory``).
     Creating a dedicated engine here used to open a *second* connection pool
     per pod on top of the app pool: on a pooled Postgres (Supavisor/PgBouncer)
@@ -36,8 +39,10 @@ async def auto_install():
         await _install_async(short=True)
         return
 
-    # Refresh global default roles (IDs 1-4) so this release's new permission
-    # keys (e.g. playgrounds, boards) land in the DB. Idempotent.
+    # Refresh global default roles (IDs 1-5) so this release's new permission
+    # keys — and any role the release ADDS, like Course Author — land in the DB.
+    # Idempotent: the seeder upserts by id, so a restart is the whole install
+    # step for an existing deployment.
     try:
         async with _async_session_factory() as session:
             await install_default_elements(session)
