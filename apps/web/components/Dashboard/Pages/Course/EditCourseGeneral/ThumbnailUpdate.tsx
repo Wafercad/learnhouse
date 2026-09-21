@@ -1,8 +1,8 @@
 import { useCourse } from '@components/Contexts/CourseContext'
 import { useOrg } from '@components/Contexts/OrgContext'
-import { updateCourseThumbnail } from '@services/courses/courses'
+import { deleteCourseThumbnail, updateCourseThumbnail } from '@services/courses/courses'
 import { getCourseThumbnailMediaDirectory } from '@services/media/media'
-import { ArrowBigUpDash, UploadCloud, Image as ImageIcon, Video } from 'lucide-react'
+import { ArrowBigUpDash, UploadCloud, Image as ImageIcon, Video, Trash2 } from 'lucide-react'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
 import React, { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -177,6 +177,46 @@ function ThumbnailUpdate({ thumbnailType }: ThumbnailUpdateProps) {
     }
   }
 
+  /**
+   * Remove the current thumbnail. Distinct from replacing it: the course ends
+   * up with none, so the file is deleted server-side and every surface falls
+   * back to its placeholder. Confirmed first — it cannot be undone, and the
+   * original image is gone from storage once it runs.
+   */
+  const removeThumbnail = async () => {
+    const label = activeTab === 'video' ? 'video' : 'image';
+    if (!window.confirm(`Remove this course ${label}? The file is deleted and cannot be recovered.`)) {
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const res = await deleteCourseThumbnail(
+        course.courseStructure.course_uuid,
+        activeTab,
+        session.data?.tokens?.access_token
+      );
+
+      const cleanUuid = course.courseStructure.course_uuid.replace('course_', '')
+      await queryClient.invalidateQueries({ queryKey: queryKeys.courses.meta(cleanUuid) })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.courses.list(org.slug) })
+      await new Promise((r) => setTimeout(r, 1500));
+
+      if (res.success === false) {
+        showError(res.HTTPmessage);
+      } else {
+        setLocalThumbnail(null);
+        toast.success(`Course ${label} removed`, {
+          duration: 3000,
+          position: 'top-center',
+        });
+      }
+    } catch (_err) {
+      showError('Failed to remove thumbnail');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   const getThumbnailUrl = (type: 'image' | 'video') => {
     if (type === 'image') {
       return course.courseStructure.thumbnail_image
@@ -246,6 +286,33 @@ function ThumbnailUpdate({ thumbnailType }: ThumbnailUpdateProps) {
     }
 
     return null;
+  };
+
+  /**
+   * Only offered when there is something to remove. The image tab falls back to
+   * a placeholder rather than rendering nothing, so "is there a preview" is not
+   * the same question as "does this course have a thumbnail" — ask the course.
+   */
+  const hasThumbnail =
+    activeTab === 'video'
+      ? Boolean(course.courseStructure.thumbnail_video)
+      : Boolean(course.courseStructure.thumbnail_image);
+
+  const renderRemoveControl = () => {
+    if (!hasThumbnail || localThumbnail) return null;
+    return (
+      <div className="max-w-[480px] mx-auto mt-3 flex justify-end">
+        <button
+          type="button"
+          onClick={removeThumbnail}
+          disabled={isLoading}
+          className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <Trash2 size={15} />
+          Remove {activeTab === 'video' ? 'video' : 'image'}
+        </button>
+      </div>
+    );
   };
 
   const renderTabContent = () => {
@@ -349,6 +416,7 @@ function ThumbnailUpdate({ thumbnailType }: ThumbnailUpdateProps) {
       <div className="p-6">
         <div className="space-y-6">
           {renderThumbnailPreview()}
+          {renderRemoveControl()}
           {renderTabContent()}
           
           <p className="text-sm text-gray-500">

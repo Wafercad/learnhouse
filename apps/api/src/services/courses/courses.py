@@ -37,7 +37,7 @@ from src.security.rbac import (
 )
 from src.security.rbac.constants import ADMIN_OR_MAINTAINER_ROLE_IDS
 from src.security.superadmin import is_user_superadmin
-from src.services.courses.thumbnails import upload_thumbnail
+from src.services.courses.thumbnails import delete_thumbnail, upload_thumbnail
 from src.services.search.normalization import LIKE_ESCAPE_CHAR, build_like_pattern
 from src.services.webhooks.dispatch import dispatch_webhooks
 from fastapi import HTTPException, Request, UploadFile, status
@@ -741,9 +741,18 @@ async def update_course_thumbnail(
     # Update course
     if name_in_disk:
         if thumbnail_type == ThumbnailType.IMAGE:
+            # Every upload writes a fresh uuid4-prefixed name, so the file this
+            # one supersedes is now unreferenced. Remove it BEFORE rebinding,
+            # or each replace leaves a permanent orphan on disk.
+            await delete_thumbnail(
+                str(course.thumbnail_image or ""), org.org_uuid, course.course_uuid  # type: ignore
+            )
             course.thumbnail_image = name_in_disk
             course.thumbnail_type = ThumbnailType.IMAGE if not course.thumbnail_video else ThumbnailType.BOTH
         elif thumbnail_type == ThumbnailType.VIDEO:
+            await delete_thumbnail(
+                str(course.thumbnail_video or ""), org.org_uuid, course.course_uuid  # type: ignore
+            )
             course.thumbnail_video = name_in_disk
             course.thumbnail_type = ThumbnailType.VIDEO if not course.thumbnail_image else ThumbnailType.BOTH
     else:
@@ -787,8 +796,87 @@ async def update_course_thumbnail(
     return course
 
 
-async def update_course(
+async def remove_course_thumbnail(
     request: Request,
+    course_uuid: str,
+    current_user: PublicUser | AnonymousUser,
+    db_session: AsyncSession,
+    thumbnail_type: ThumbnailType = ThumbnailType.IMAGE,
+):
+    """Clear a course thumbnail and delete its file from storage.
+
+    Removing means the course genuinely has no thumbnail, so the field is
+    cleared AND the object removed — leaving the file behind would keep an
+    image nothing references and nobody can reach. `thumbnail_type` is
+    recomputed from what actually remains rather than assumed, so clearing the
+    image of a course that also has a video leaves it VIDEO, not BOTH.
+    """
+    statement = select(Course).where(Course.course_uuid == course_uuid)
+    course = (await db_session.execute(statement)).scalars().first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    # Same RBAC as setting one: removing a thumbnail is a course update.
+    await check_resource_access(
+        request, db_session, current_user, course.course_uuid, AccessAction.UPDATE
+    )
+
+    org_statement = select(Organization).where(Organization.id == course.org_id)
+    org = (await db_session.execute(org_statement)).scalars().first()
+
+    if thumbnail_type == ThumbnailType.VIDEO:
+        await delete_thumbnail(
+            str(course.thumbnail_video or ""), org.org_uuid, course.course_uuid  # type: ignore
+        )
+        course.thumbnail_video = ""
+    else:
+        await delete_thumbnail(
+            str(course.thumbnail_image or ""), org.org_uuid, course.course_uuid  # type: ignore
+        )
+        course.thumbnail_image = ""
+
+    # Derive the remaining type from what is actually left.
+    if course.thumbnail_image and course.thumbnail_video:
+        course.thumbnail_type = ThumbnailType.BOTH
+    elif course.thumbnail_video:
+        course.thumbnail_type = ThumbnailType.VIDEO
+    else:
+        course.thumbnail_type = ThumbnailType.IMAGE
+
+    course.update_date = str(datetime.now())
+
+    db_session.add(course)
+    await db_session.commit()
+    await db_session.refresh(course)
+
+    authors_statement = (
+        select(ResourceAuthor, User)
+        .join(User, ResourceAuthor.user_id == User.id) # type: ignore
+        .where(ResourceAuthor.resource_uuid == course.course_uuid)
+        .order_by(
+            ResourceAuthor.id.asc() # type: ignore
+        )
+    )
+    author_results = (await db_session.execute(authors_statement)).all()
+    authors = [
+        AuthorWithRole(
+            user=UserRead.model_validate(user),
+            authorship=resource_author.authorship,
+            authorship_status=resource_author.authorship_status,
+            creation_date=resource_author.creation_date,
+            update_date=resource_author.update_date
+        )
+        for resource_author, user in author_results
+    ]
+
+    return CourseRead(**course.model_dump(), authors=authors)
+
+
+async def update_course(    request: Request,
     course_object: CourseUpdate,
     course_uuid: str,
     current_user: PublicUser | AnonymousUser | APITokenUser,

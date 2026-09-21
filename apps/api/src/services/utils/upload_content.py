@@ -210,3 +210,56 @@ async def read_content(
 def _read_file_bytes(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
+
+
+async def delete_content(
+    directory: str,
+    type_of_dir: str,
+    uuid: str,
+    file_and_format: str,
+) -> bool:
+    """Remove one stored content file. Mirrors `upload_content`'s path rules and
+    delivery modes, so a file written by that function is removable by this one.
+
+    Returns True when something was removed, False when there was nothing to
+    remove. A missing file is NOT an error: replace and delete both call this,
+    and a caller that has already lost its file still wants its row cleaned up.
+    Storage failures are logged rather than raised for the same reason — a stale
+    object is litter, but a 500 here would leave the course pointing at a file
+    the user asked to be rid of.
+    """
+    if not file_and_format:
+        return False
+
+    learnhouse_config = get_learnhouse_config()
+    content_delivery = learnhouse_config.hosting_config.content_delivery.type
+
+    if content_delivery == "filesystem":
+        try:
+            safe_path = _safe_content_path(type_of_dir, uuid, directory, file_and_format)
+        except HTTPException:
+            # A stored name that no longer canonicalizes is not something to
+            # delete by guessing at; leave it and let the row be cleared.
+            logger.warning("Refusing to delete an uncanonical content path: %r", file_and_format)
+            return False
+        try:
+            os.remove(safe_path)
+        except FileNotFoundError:
+            return False
+        except OSError as err:
+            logger.error("Could not delete content file %s: %s", safe_path, err)
+            return False
+        return True
+
+    elif content_delivery == "s3api":
+        s3 = get_storage_client()
+        bucket_name = get_s3_bucket_name()
+        s3_key = f"content/{type_of_dir}/{uuid}/{directory}/{file_and_format}"
+        try:
+            await asyncio.to_thread(s3.delete_object, Bucket=bucket_name, Key=s3_key)
+        except (ClientError, BotoCoreError) as err:
+            logger.error("S3 delete failed for %s: %s", s3_key, err)
+            return False
+        return True
+
+    return False

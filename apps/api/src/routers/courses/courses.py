@@ -35,6 +35,7 @@ from src.services.courses.courses import (
     update_course,
     delete_course,
     update_course_thumbnail,
+    remove_course_thumbnail,
     search_courses,
     get_course_user_rights,
     clone_course,
@@ -366,6 +367,35 @@ async def api_create_course_thumbnail(
     """
     return await update_course_thumbnail(
         request, course_uuid, current_user, db_session, thumbnail, thumbnail_type
+    )
+
+
+@router.delete(
+    "/{course_uuid}/thumbnail",
+    response_model=CourseRead,
+    summary="Remove course thumbnail",
+    description=(
+        "Clear the course thumbnail and delete the stored file. The course then "
+        "has no thumbnail, and clients fall back to their placeholder."
+    ),
+    responses={
+        200: {"description": "Thumbnail removed", "model": CourseRead},
+        403: {"description": "User lacks permission to update the course"},
+        404: {"description": "Course not found"},
+    },
+)
+async def api_delete_course_thumbnail(
+    request: Request,
+    course_uuid: str,
+    thumbnail_type: ThumbnailType = ThumbnailType.IMAGE,
+    db_session: AsyncSession = Depends(get_db_session),
+    current_user: PublicUser = Depends(get_current_user),
+) -> CourseRead:
+    """
+    Remove Course Thumbnail (Image or Video)
+    """
+    return await remove_course_thumbnail(
+        request, course_uuid, current_user, db_session, thumbnail_type
     )
 
 
