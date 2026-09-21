@@ -98,6 +98,19 @@ export async function updateCourseThumbnail(course_uuid: any, formData: FormData
   return res
 }
 
+export async function deleteCourseThumbnail(
+  course_uuid: any,
+  thumbnail_type: 'image' | 'video',
+  access_token: any
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}courses/${course_uuid}/thumbnail?thumbnail_type=${thumbnail_type}`,
+    RequestBodyWithAuthHeader('DELETE', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
 export async function createNewCourse(
   org_id: string,
   course_body: any,
