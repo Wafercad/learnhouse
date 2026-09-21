@@ -1,0 +1,16 @@
+# `COPY . .` runs AFTER the resolved node_modules is copied in from the deps
+# stage, so without this the host's tree overwrites it and the build compiles
+# against whatever happens to be installed locally rather than the lockfile.
+# That is not a theoretical drift: it type-checked against loops 4.1.0 while
+# bun.lock pins 7.0.0, whose createContact takes an object rather than an email
+# string — a failure that cannot reproduce on a clean checkout.
+node_modules
+.next
+out
+
+# Never bake local secrets or state into an image layer.
+.env
+.env.*
+.git
+.turbo
+*.log
