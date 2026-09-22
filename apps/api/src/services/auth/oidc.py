@@ -45,17 +45,22 @@ from src.security.auth import create_access_token, create_refresh_token
 from src.services.users.users import create_user
 
 # Wafercad role claim -> LearnHouse role_id. Federation is ONE-WAY (Wafercad is
-# the IdP), so an LH admin is never a Wafercad admin: a WCS 'instructor' authors
-# courses in LH only, and stays an ordinary user in WCS. Unknown/absent roles
-# fall back to the configured default (member). LH roles: 1=Admin, 2=Maintainer,
-# 4=member.
-_LH_ADMIN_ROLE_ID = 1
-_LH_MEMBER_ROLE_ID = 4
+# the IdP), so an LH role is never a Wafercad role.
+#
+# ONE entry, mirroring account_service's `_ROLE_TO_LEARNHOUSE`: only the platform
+# admin signs in to LearnHouse at all. Students, instructors and institution
+# admins do every one of their jobs in Cloud Campus — the browser never talks to
+# LearnHouse (ADR-001) and campus_service reaches it with the service-integration
+# token — so granting them a role here handed out rights nobody arrives to use.
+#
+# And the platform admin is a COURSE AUTHOR (5), not an Admin (1). Admin and
+# Maintainer carry user, role and organization administration a course author has
+# no business with; Course Author is course-shaped and nothing else. Anything
+# unmapped falls to the configured default, which is the least-privilege member —
+# the right answer for a role that does not exist yet.
+_LH_COURSE_AUTHOR_ROLE_ID = 5
 _ROLE_CLAIM_TO_LH: dict[str, int] = {
-    "student": _LH_MEMBER_ROLE_ID,
-    "instructor": _LH_ADMIN_ROLE_ID,
-    "institution_admin": _LH_ADMIN_ROLE_ID,
-    "super_admin": _LH_ADMIN_ROLE_ID,
+    "super_admin": _LH_COURSE_AUTHOR_ROLE_ID,
 }
 
 _STATE_PREFIX = "oidc:state:"

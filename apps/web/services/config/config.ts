@@ -143,6 +143,16 @@ export const isOnCustomDomain = (): boolean => {
 
 // Derive API URL from backend URL (with backward compat for NEXT_PUBLIC_LEARNHOUSE_API_URL)
 const deriveAPIUrl = (): string => {
+  // The API can answer at a different address for this server than for the
+  // browser. Locally it runs on the HOST while the web app renders inside a
+  // container, where 127.0.0.1 is the container itself and every server-side
+  // fetch is ECONNREFUSED. Deliberately not NEXT_PUBLIC_: it must never reach
+  // the browser, because the browser-facing URL is the host a LearnHouse
+  // session cookie belongs to and two spellings would split it.
+  if (typeof window === 'undefined') {
+    const serverApiUrl = getConfig('LEARNHOUSE_SERVER_API_URL')
+    if (serverApiUrl) return serverApiUrl
+  }
   // Backward compat: if explicit API URL is set, use it
   const explicitApiUrl = getConfig('NEXT_PUBLIC_LEARNHOUSE_API_URL')
   if (explicitApiUrl) return explicitApiUrl

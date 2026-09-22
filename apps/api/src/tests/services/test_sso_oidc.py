@@ -184,26 +184,35 @@ async def test_provision_existing_user_adds_membership_exactly_once(
 
 def test_role_id_for_maps_wafercad_roles():
     cfg = _cfg()  # default_role_id = 4
+    # ONE mapped role: only the platform admin signs in to LearnHouse, and they
+    # author courses (5) rather than administer the instance (1).
+    assert oidc._role_id_for("super_admin", cfg) == 5
+    assert oidc._role_id_for("Super_Admin", cfg) == 5  # case-insensitive
+    # Everyone else does their job in Cloud Campus and arrives here as a member.
     assert oidc._role_id_for("student", cfg) == 4
-    assert oidc._role_id_for("instructor", cfg) == 1
-    assert oidc._role_id_for("institution_admin", cfg) == 1
-    assert oidc._role_id_for("super_admin", cfg) == 1
-    assert oidc._role_id_for("Instructor", cfg) == 1  # case-insensitive
+    assert oidc._role_id_for("instructor", cfg) == 4
+    assert oidc._role_id_for("institution_admin", cfg) == 4
     assert oidc._role_id_for("designer", cfg) == 4  # unknown role -> default
     assert oidc._role_id_for(None, cfg) == 4  # absent claim -> default
 
 
+def test_role_map_never_grants_instance_administration():
+    # Admin(1) and Maintainer(2) carry user, role and organization administration
+    # a course author has no business with. Nothing may map to them.
+    assert set(oidc._ROLE_CLAIM_TO_LH.values()).isdisjoint({1, 2})
+
+
 @pytest.mark.asyncio
-async def test_provision_new_instructor_is_elevated_to_admin(
-    db, org, user_role, admin_role, mock_request
+async def test_provision_new_platform_admin_becomes_course_author(
+    db, org, user_role, course_author_role, mock_request
 ):
-    # create_user makes a role_id=4 membership; the RP then elevates it to Admin(1)
-    # for a Wafercad 'instructor'.
+    # create_user makes a role_id=4 membership; the RP then moves it to Course
+    # Author(5) for a Wafercad 'super_admin'.
     created = SimpleNamespace(email="prof@x.com", id=77)
     with patch(f"{_MODULE}.create_user", new=AsyncMock(return_value=created)):
         await oidc._provision_user(
             _cfg(),
-            {"email": "prof@x.com", "sub": "u", "role": "instructor"},
+            {"email": "prof@x.com", "sub": "u", "role": "super_admin"},
             org.slug,
             mock_request,
             db,
@@ -215,15 +224,15 @@ async def test_provision_new_instructor_is_elevated_to_admin(
             )
         )
     ).scalars().first()
-    assert membership is not None and membership.role_id == 1
+    assert membership is not None and membership.role_id == 5
 
 
 @pytest.mark.asyncio
 async def test_provision_existing_user_syncs_role_on_login(
-    db, org, user_role, admin_role, mock_request
+    db, org, user_role, course_author_role, mock_request
 ):
-    # A student who becomes an instructor in Wafercad is re-synced to Admin in LH
-    # on the next login (fresh claims win).
+    # A member who becomes the platform admin in Wafercad is re-synced to Course
+    # Author in LH on the next login (fresh claims win).
     db.add(
         User(
             id=60,
@@ -250,7 +259,7 @@ async def test_provision_existing_user_syncs_role_on_login(
 
     await oidc._provision_user(
         _cfg(),
-        {"email": "prof2@x.com", "role": "instructor"},
+        {"email": "prof2@x.com", "role": "super_admin"},
         org.slug,
         mock_request,
         db,
@@ -262,7 +271,7 @@ async def test_provision_existing_user_syncs_role_on_login(
             )
         )
     ).scalars().first()
-    assert membership.role_id == 1
+    assert membership.role_id == 5
 
 
 @pytest.mark.asyncio
