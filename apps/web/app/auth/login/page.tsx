@@ -28,8 +28,14 @@ export const metadata: Metadata = {
 const WC_LOGIN_URL =
   process.env.NEXT_PUBLIC_WC_LOGIN_URL || 'https://app.wafercad.com/login'
 
+/** A destination on this site, or null — never an origin we do not own. */
+function safeNext(candidate: string | undefined): string | null {
+  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) return null
+  return candidate.includes('\\') ? null : candidate
+}
+
 /** The browser-facing SSO entry point, or null when this instance has no IdP. */
-async function ssoStartUrl(): Promise<string | null> {
+async function ssoStartUrl(next: string | null): Promise<string | null> {
   const org = getDefaultOrg()
   try {
     const res = await fetch(
@@ -46,12 +52,21 @@ async function ssoStartUrl(): Promise<string | null> {
   // The BROWSER's spelling of the API, not this server's — they differ wherever
   // the API is reachable from the container under another address.
   const backend = getBackendUrl().replace(/\/+$/, '')
-  return `${backend}/api/v1/auth/sso/start?org_slug=${encodeURIComponent(org)}`
+  const destination = next ? `&next=${encodeURIComponent(next)}` : ''
+  return `${backend}/api/v1/auth/sso/start?org_slug=${encodeURIComponent(org)}${destination}`
 }
 
-const Login = async () => {
+const Login = async ({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>
+}) => {
+  // Where the guard that bounced them here was sending them. It rides in the
+  // login state and comes back as the post-login destination, so a deep link
+  // survives the hop instead of dumping an admin on the org picker.
+  const next = safeNext((await searchParams)?.next)
   // `redirect()` throws to unwind, so it MUST stay outside the try above.
-  redirect((await ssoStartUrl()) ?? WC_LOGIN_URL)
+  redirect((await ssoStartUrl(next)) ?? WC_LOGIN_URL)
 }
 
 export default Login

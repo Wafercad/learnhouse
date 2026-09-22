@@ -72,6 +72,24 @@ async def test_build_authorization_url_stashes_state_and_carries_pkce():
     assert stashed["verifier"] and stashed["nonce"]
 
 
+@pytest.mark.asyncio
+async def test_authorization_url_carries_the_destination_in_the_state():
+    # The destination rides server-side and single-use, so it cannot be swapped
+    # between the two legs of the login.
+    with patch(f"{_MODULE}._discover", new=AsyncMock(return_value=_DISCOVERY)):
+        url, state = await oidc.build_authorization_url(
+            _cfg(), "wc-academy", "/dash/courses"
+        )
+    assert "dash%2Fcourses" not in url and "/dash/courses" not in url
+    assert oidc._pop_state(state)["next"] == "/dash/courses"
+
+    with patch(f"{_MODULE}._discover", new=AsyncMock(return_value=_DISCOVERY)):
+        _url, state = await oidc.build_authorization_url(
+            _cfg(), "wc-academy", "//evil.test/phish"
+        )
+    assert oidc._pop_state(state)["next"] is None
+
+
 # ---------------------------------------------------------------------------
 # callback wiring
 # ---------------------------------------------------------------------------
@@ -101,6 +119,51 @@ async def test_complete_login_wires_exchange_validate_provision_and_mints_sessio
     provision.assert_awaited_once()
     # state was consumed — a replay finds nothing
     assert oidc._pop_state("st-1") is None
+
+
+@pytest.mark.asyncio
+async def test_complete_login_returns_where_the_browser_was_headed(mock_request):
+    oidc._store_state(
+        "st-2",
+        {"verifier": "v", "nonce": "n", "org_slug": "wc-academy", "next": "/dash/courses"},
+    )
+    with patch(f"{_MODULE}._discover", new=AsyncMock(return_value=_DISCOVERY)), patch(
+        f"{_MODULE}._exchange_code",
+        new=AsyncMock(return_value={"id_token": "id.jwt"}),
+    ), patch(
+        f"{_MODULE}._validate_id_token",
+        return_value={"email": "a@x.com", "sub": "u", "nonce": "n"},
+    ), patch(
+        f"{_MODULE}._provision_user",
+        new=AsyncMock(return_value=SimpleNamespace(email="a@x.com")),
+    ):
+        _user, _tokens, redirect_url = await oidc.complete_login(
+            _cfg(), "code", "st-2", mock_request, db_session=Mock()
+        )
+    assert redirect_url == "/dash/courses"
+
+
+@pytest.mark.asyncio
+async def test_complete_login_refuses_a_destination_off_this_site(mock_request):
+    # Even from our own store: a value is only as safe as its last validation.
+    oidc._store_state(
+        "st-3",
+        {"verifier": "v", "nonce": "n", "org_slug": "wc-academy", "next": "//evil.test"},
+    )
+    with patch(f"{_MODULE}._discover", new=AsyncMock(return_value=_DISCOVERY)), patch(
+        f"{_MODULE}._exchange_code",
+        new=AsyncMock(return_value={"id_token": "id.jwt"}),
+    ), patch(
+        f"{_MODULE}._validate_id_token",
+        return_value={"email": "a@x.com", "sub": "u", "nonce": "n"},
+    ), patch(
+        f"{_MODULE}._provision_user",
+        new=AsyncMock(return_value=SimpleNamespace(email="a@x.com")),
+    ):
+        _user, _tokens, redirect_url = await oidc.complete_login(
+            _cfg(), "code", "st-3", mock_request, db_session=Mock()
+        )
+    assert redirect_url == oidc._POST_LOGIN_PATH
 
 
 @pytest.mark.asyncio
@@ -272,6 +335,19 @@ async def test_provision_existing_user_syncs_role_on_login(
         )
     ).scalars().first()
     assert membership.role_id == 5
+
+
+def test_safe_next_path_accepts_only_paths_on_this_site():
+    # The destination a deep link carries through the login hop.
+    assert oidc.safe_next_path("/dash/courses") == "/dash/courses"
+    assert oidc.safe_next_path("/dash/courses?tab=drafts") == "/dash/courses?tab=drafts"
+    # An open redirect on a login route is a phishing primitive.
+    assert oidc.safe_next_path("//evil.test/phish") is None
+    assert oidc.safe_next_path("https://evil.test") is None
+    assert oidc.safe_next_path("/\\evil.test") is None  # browsers normalise \ to /
+    assert oidc.safe_next_path("dash/courses") is None  # no leading slash
+    assert oidc.safe_next_path(None) is None
+    assert oidc.safe_next_path(42) is None
 
 
 @pytest.mark.asyncio

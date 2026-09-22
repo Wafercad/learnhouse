@@ -59,20 +59,26 @@ async def sso_check(org_slug: str):
 
 
 @router.get("/authorize", summary="Begin OIDC login (returns the IdP URL as JSON)")
-async def sso_authorize(org_slug: str):
+async def sso_authorize(org_slug: str, next: str | None = None):
     cfg = _require_oidc()
     try:
-        authorization_url, state = await build_authorization_url(cfg, org_slug)
+        authorization_url, state = await build_authorization_url(cfg, org_slug, next)
     except OIDCError as exc:
         raise _oidc_http_error(exc)
     return {"authorization_url": authorization_url, "state": state}
 
 
 @router.get("/start", summary="Begin OIDC login (302 to the IdP — SP-initiated)")
-async def sso_start(org_slug: str):
+async def sso_start(org_slug: str, next: str | None = None):
+    """`next` is where the browser was headed; it comes back as `redirect_url`.
+
+    Without it a deep link loses its destination at the login hop: an admin who
+    clicked through to the course dashboard signs in and lands on the org picker,
+    which is not where they were going.
+    """
     cfg = _require_oidc()
     try:
-        authorization_url, _state = await build_authorization_url(cfg, org_slug)
+        authorization_url, _state = await build_authorization_url(cfg, org_slug, next)
     except OIDCError as exc:
         raise _oidc_http_error(exc)
     return RedirectResponse(url=authorization_url, status_code=302)

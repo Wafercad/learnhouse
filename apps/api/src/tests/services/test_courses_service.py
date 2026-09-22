@@ -883,7 +883,9 @@ class TestCourseMutationsAndRights:
         ), patch(
             "src.security.rbac.rbac.authorization_verify_based_on_roles",
             new_callable=AsyncMock,
-            side_effect=[True, True],
+            # create, read, update, delete — the last two are what an org-wide
+            # authoring role is granted by, rather than by owning the course.
+            side_effect=[True, True, True, True],
         ):
             admin_rights = await get_course_user_rights(
                 mock_request, course.course_uuid, admin_user, db
@@ -898,6 +900,42 @@ class TestCourseMutationsAndRights:
         assert admin_rights["permissions"]["create"] is True
         assert anon_rights["permissions"]["read"] is True
         assert anon_rights["permissions"]["update"] is False
+
+    @pytest.mark.asyncio
+    async def test_course_rights_follow_the_role_not_only_ownership(
+        self, db, org, course, regular_user, mock_request
+    ):
+        """An org-wide authoring role may edit a course it does not own.
+
+        Course Author holds `courses.action_update`/`action_delete` and nothing
+        administrative, by design. Deriving these permissions from ownership or an
+        admin badge alone hid every editing surface from the one role that exists
+        to use them — while `check_resource_access`, which the write endpoints
+        actually call, allowed the write. The UI said no and the API said yes.
+        """
+        with patch(
+            "src.security.rbac.rbac.authorization_verify_based_on_org_admin_status",
+            new_callable=AsyncMock,
+            return_value=False,  # no admin or maintainer role
+        ), patch(
+            "src.security.rbac.rbac.authorization_verify_based_on_roles",
+            new_callable=AsyncMock,
+            return_value=True,  # the role grants it
+        ):
+            rights = await get_course_user_rights(
+                mock_request, course.course_uuid, regular_user, db
+            )
+
+        assert rights["ownership"]["is_owner"] is False
+        assert rights["roles"]["is_admin"] is False
+        assert rights["permissions"]["update"] is True
+        assert rights["permissions"]["delete"] is True
+        assert rights["permissions"]["create_content"] is True
+        assert rights["permissions"]["update_content"] is True
+        assert rights["permissions"]["delete_content"] is True
+        # Still not administration: contributors and access stay owner/admin-only.
+        assert rights["permissions"]["manage_contributors"] is False
+        assert rights["permissions"]["manage_access"] is False
 
     @pytest.mark.asyncio
     async def test_create_course_uses_api_token_creator_and_video_thumbnail(
