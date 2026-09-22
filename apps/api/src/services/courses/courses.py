@@ -1690,6 +1690,19 @@ async def get_course_user_rights(
     if has_user_permissions:
         rights["roles"]["is_user"] = True
 
+    # What the caller's ROLES allow on THIS course — the same question the write
+    # endpoints ask through `check_resource_access`. Asking only "are you an admin,
+    # or did you make this?" cannot see an org-wide authoring role: Course Author
+    # holds courses.action_update and action_delete and deliberately holds nothing
+    # administrative, so every editing surface was hidden from the one role that
+    # exists to use them, while the API would have allowed the write.
+    can_update_by_role = await authorization_verify_based_on_roles(
+        request, rights_acting_user_id, "update", course_uuid, db_session
+    )
+    can_delete_by_role = await authorization_verify_based_on_roles(
+        request, rights_acting_user_id, "delete", course_uuid, db_session
+    )
+
     # Determine permissions based on ownership and roles
     is_course_owner = rights["ownership"]["is_owner"]
     is_admin = rights["roles"]["is_admin"]
@@ -1705,23 +1718,25 @@ async def get_course_user_rights(
         rights["permissions"]["create"] = True
 
     # UPDATE permissions (course-level updates)
-    if is_course_owner or is_admin or is_maintainer_role:
+    if is_course_owner or is_admin or is_maintainer_role or can_update_by_role:
         rights["permissions"]["update"] = True
 
     # DELETE permissions (course deletion)
-    if is_course_owner or is_admin or is_maintainer_role:
+    if is_course_owner or is_admin or is_maintainer_role or can_delete_by_role:
         rights["permissions"]["delete"] = True
 
     # CONTENT CREATION permissions (activities, assignments, chapters, etc.)
-    if is_course_owner or is_admin or is_maintainer_role:
+    # Whoever may change the course may change what is inside it; a role that
+    # could edit the shell but not its chapters could not author anything.
+    if is_course_owner or is_admin or is_maintainer_role or can_update_by_role:
         rights["permissions"]["create_content"] = True
 
     # CONTENT UPDATE permissions
-    if is_course_owner or is_admin or is_maintainer_role:
+    if is_course_owner or is_admin or is_maintainer_role or can_update_by_role:
         rights["permissions"]["update_content"] = True
 
     # CONTENT DELETE permissions
-    if is_course_owner or is_admin or is_maintainer_role:
+    if is_course_owner or is_admin or is_maintainer_role or can_delete_by_role:
         rights["permissions"]["delete_content"] = True
 
     # CONTRIBUTOR MANAGEMENT permissions

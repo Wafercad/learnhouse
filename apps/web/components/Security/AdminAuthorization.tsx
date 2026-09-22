@@ -56,7 +56,12 @@ const AdminAuthorization: React.FC<AuthorizationProps> = ({ children, authorizat
     if (!isUserAuthenticated) {
       // org can still be null here (its fetch is client-side and may not have
       // landed); getUriWithOrg tolerates an empty slug, dereferencing does not.
-      router.push(getUriWithOrg(org?.slug ?? '', '/login'));
+      //
+      // Carry where they were going. Without it a deep link loses its
+      // destination at the login hop — an admin who followed a link to the
+      // course dashboard signs in and lands on the org picker instead.
+      const next = `?next=${encodeURIComponent(pathname)}`;
+      router.push(getUriWithOrg(org?.slug ?? '', `/login${next}`));
       return;
     }
 

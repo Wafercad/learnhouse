@@ -45,17 +45,22 @@ from src.security.auth import create_access_token, create_refresh_token
 from src.services.users.users import create_user
 
 # Wafercad role claim -> LearnHouse role_id. Federation is ONE-WAY (Wafercad is
-# the IdP), so an LH admin is never a Wafercad admin: a WCS 'instructor' authors
-# courses in LH only, and stays an ordinary user in WCS. Unknown/absent roles
-# fall back to the configured default (member). LH roles: 1=Admin, 2=Maintainer,
-# 4=member.
-_LH_ADMIN_ROLE_ID = 1
-_LH_MEMBER_ROLE_ID = 4
+# the IdP), so an LH role is never a Wafercad role.
+#
+# ONE entry, mirroring account_service's `_ROLE_TO_LEARNHOUSE`: only the platform
+# admin signs in to LearnHouse at all. Students, instructors and institution
+# admins do every one of their jobs in Cloud Campus — the browser never talks to
+# LearnHouse (ADR-001) and campus_service reaches it with the service-integration
+# token — so granting them a role here handed out rights nobody arrives to use.
+#
+# And the platform admin is a COURSE AUTHOR (5), not an Admin (1). Admin and
+# Maintainer carry user, role and organization administration a course author has
+# no business with; Course Author is course-shaped and nothing else. Anything
+# unmapped falls to the configured default, which is the least-privilege member —
+# the right answer for a role that does not exist yet.
+_LH_COURSE_AUTHOR_ROLE_ID = 5
 _ROLE_CLAIM_TO_LH: dict[str, int] = {
-    "student": _LH_MEMBER_ROLE_ID,
-    "instructor": _LH_ADMIN_ROLE_ID,
-    "institution_admin": _LH_ADMIN_ROLE_ID,
-    "super_admin": _LH_ADMIN_ROLE_ID,
+    "super_admin": _LH_COURSE_AUTHOR_ROLE_ID,
 }
 
 _STATE_PREFIX = "oidc:state:"
@@ -141,8 +146,36 @@ def _new_pkce_pair() -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-async def build_authorization_url(cfg: OIDCConfig, org_slug: str) -> Tuple[str, str]:
-    """Return (authorization_url, state) to send the browser to the IdP."""
+def safe_next_path(candidate: object) -> Optional[str]:
+    """A destination we are willing to send a browser back to, or None.
+
+    Only a path on THIS site: one leading slash and no second one, since `//host`
+    is an absolute URL to another origin wearing a path's clothes. Backslashes are
+    rejected outright because some browsers normalise them into slashes, which
+    turns a leading slash-backslash into exactly that. An open redirect on a login route is a
+    phishing primitive, so anything unrecognised becomes None and the caller falls
+    back to its own default.
+    """
+    if not isinstance(candidate, str):
+        return None
+    value = candidate.strip()
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        return None
+    return value
+
+
+async def build_authorization_url(
+    cfg: OIDCConfig,
+    org_slug: str,
+    next_path: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Return (authorization_url, state) to send the browser to the IdP.
+
+    `next_path` is where the browser was headed before it was sent to log in. It
+    rides in the STATE, not in a query parameter on the way back: state is
+    server-side, single-use and already bound to this login, so the destination
+    cannot be swapped between the two legs.
+    """
     document = await _discover(cfg.issuer)
     authorization_endpoint = document.get("authorization_endpoint")
     if not authorization_endpoint:
@@ -151,7 +184,15 @@ async def build_authorization_url(cfg: OIDCConfig, org_slug: str) -> Tuple[str, 
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     verifier, challenge = _new_pkce_pair()
-    _store_state(state, {"verifier": verifier, "nonce": nonce, "org_slug": org_slug})
+    _store_state(
+        state,
+        {
+            "verifier": verifier,
+            "nonce": nonce,
+            "org_slug": org_slug,
+            "next": safe_next_path(next_path),
+        },
+    )
 
     params = {
         "response_type": "code",
@@ -190,7 +231,9 @@ async def complete_login(
     access_token = create_access_token(data={"sub": user.email, "purpose": "session"})
     refresh_token = create_refresh_token(data={"sub": user.email, "purpose": "session"})
     tokens = {"access_token": access_token, "refresh_token": refresh_token, "expiry": None}
-    return user, tokens, _POST_LOGIN_PATH
+    # Where they were going before the login hop, re-checked on the way out: the
+    # store is ours, but a value is only as safe as its last validation.
+    return user, tokens, safe_next_path(stashed.get("next")) or _POST_LOGIN_PATH
 
 
 # ---------------------------------------------------------------------------

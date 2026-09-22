@@ -235,6 +235,25 @@ async def admin_role(db, org):
 
 
 @pytest.fixture
+async def course_author_role(db, org):
+    """Course Author role (id=5) — the catalogue, and nothing administrative."""
+    r = Role(
+        id=5,
+        name="Course Author",
+        org_id=org.id,
+        role_type=RoleTypeEnum.TYPE_ORGANIZATION,
+        role_uuid="role_course_author",
+        rights=USER_RIGHTS.model_dump(),
+        creation_date=str(datetime.now()),
+        update_date=str(datetime.now()),
+    )
+    db.add(r)
+    await db.commit()
+    await db.refresh(r)
+    return r
+
+
+@pytest.fixture
 async def user_role(db, org):
     """Regular user role (id=4) with read-only permissions."""
     r = Role(
