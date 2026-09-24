@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test'
-import { originOverrides } from '../services/config/origin-config'
+import { frontendOriginForHost, originOverrides } from '../services/config/origin-config'
 
 describe('explicit LAN and VPN routes', () => {
   const config = { NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES: JSON.stringify({
     'http://192.168.1.34:3000': 'http://192.168.1.34:4300',
     'https://dev.example.ts.net:9443': 'https://dev.example.ts.net',
   }) }
+  test('pins server login redirects to explicitly configured hosts and ports', () => {
+    expect(frontendOriginForHost(config, '192.168.1.34:3000')).toBe('http://192.168.1.34:3000')
+    expect(frontendOriginForHost(config, 'dev.example.ts.net:9443')).toBe('https://dev.example.ts.net:9443')
+    expect(frontendOriginForHost(config, 'evil.test')).toBeNull()
+    expect(frontendOriginForHost(config, '192.168.1.34:9999')).toBeNull()
+  })
   test('uses the active Academy host for browser API requests', () => {
     const got = originOverrides(config, 'http://192.168.1.34:3000')
     expect(got.NEXT_PUBLIC_LEARNHOUSE_API_URL).toBe('http://192.168.1.34:3000/api/v1/')

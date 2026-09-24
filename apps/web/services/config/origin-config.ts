@@ -21,3 +21,17 @@ export function originOverrides(config: Record<string, string>, browserOrigin: s
     }
   } catch { return {} }
 }
+
+/** Select a server-rendered login alias only from the explicit deployment map. */
+export function frontendOriginForHost(config: Record<string, string>, host: string | null): string | null {
+  if (!host) return null
+  try {
+    const routes = JSON.parse(config['NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES'] || '{}')
+    for (const candidate of Object.keys(routes || {})) {
+      if (new URL(candidate).host === host && originOverrides(config, candidate).NEXT_PUBLIC_LEARNHOUSE_DOMAIN) {
+        return candidate
+      }
+    }
+  } catch { /* Invalid config must not turn an arbitrary Host into a redirect. */ }
+  return null
+}

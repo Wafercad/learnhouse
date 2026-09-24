@@ -1,7 +1,10 @@
+import { headers } from 'next/headers'
+import { frontendOriginForHost } from '@services/config/origin-config'
 import { redirect } from 'next/navigation'
 import { Metadata } from 'next'
 import {
   getBackendUrl,
+  getConfig,
   getDefaultOrg,
   getServerAPIUrl,
 } from '@services/config/config'
@@ -35,7 +38,7 @@ function safeNext(candidate: string | undefined): string | null {
 }
 
 /** The browser-facing SSO entry point, or null when this instance has no IdP. */
-async function ssoStartUrl(next: string | null): Promise<string | null> {
+async function ssoStartUrl(next: string | null, frontendOrigin: string | null): Promise<string | null> {
   const org = getDefaultOrg()
   try {
     const res = await fetch(
@@ -51,9 +54,10 @@ async function ssoStartUrl(next: string | null): Promise<string | null> {
   }
   // The BROWSER's spelling of the API, not this server's — they differ wherever
   // the API is reachable from the container under another address.
-  const backend = getBackendUrl().replace(/\/+$/, '')
+  const backend = (frontendOrigin || getBackendUrl()).replace(/\/+$/, '')
   const destination = next ? `&next=${encodeURIComponent(next)}` : ''
-  return `${backend}/api/v1/auth/sso/start?org_slug=${encodeURIComponent(org)}${destination}`
+  const origin = frontendOrigin ? `&frontend_origin=${encodeURIComponent(frontendOrigin)}` : ''
+  return `${backend}/api/v1/auth/sso/start?org_slug=${encodeURIComponent(org)}${destination}${origin}`
 }
 
 const Login = async ({
@@ -66,7 +70,11 @@ const Login = async ({
   // survives the hop instead of dumping an admin on the org picker.
   const next = safeNext((await searchParams)?.next)
   // `redirect()` throws to unwind, so it MUST stay outside the try above.
-  redirect((await ssoStartUrl(next)) ?? WC_LOGIN_URL)
+  const requestHeaders = await headers()
+  const frontendOrigin = frontendOriginForHost({
+    NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES: getConfig('NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES'),
+  }, requestHeaders.get('host'))
+  redirect((await ssoStartUrl(next, frontendOrigin)) ?? WC_LOGIN_URL)
 }
 
 export default Login
