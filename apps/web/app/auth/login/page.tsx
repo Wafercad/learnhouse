@@ -38,9 +38,13 @@ function safeNext(candidate: string | undefined): string | null {
 }
 
 /** The browser-facing SSO entry point, or null when this instance has no IdP. */
-async function ssoStartUrl(next: string | null, frontendOrigin: string | null): Promise<string | null> {
-  const org = getDefaultOrg()
+async function ssoStartUrl(next: string | null, frontendOrigin: string | null, tenant: string | null): Promise<string | null> {
+  let org = tenant || getDefaultOrg()
   try {
+    if (!tenant) {
+      const instance = await fetch(`${getServerAPIUrl()}instance/info`, { cache: 'no-store' })
+      if (instance.ok) org = (await instance.json()).default_org_slug || org
+    }
     const res = await fetch(
       `${getServerAPIUrl()}auth/sso/check?org_slug=${encodeURIComponent(org)}`,
       { cache: 'no-store' },
@@ -74,7 +78,7 @@ const Login = async ({
   const frontendOrigin = frontendOriginForHost({
     NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES: getConfig('NEXT_PUBLIC_LEARNHOUSE_ORIGIN_ROUTES'),
   }, requestHeaders.get('host'))
-  redirect((await ssoStartUrl(next, frontendOrigin)) ?? WC_LOGIN_URL)
+  redirect((await ssoStartUrl(next, frontendOrigin, requestHeaders.get('x-lh-org'))) ?? WC_LOGIN_URL)
 }
 
 export default Login
