@@ -1,4 +1,5 @@
 import logging
+import os
 from sqlmodel import select
 
 from cli import _install_async
@@ -29,6 +30,9 @@ async def auto_install():
 
     Tables are already created by ``connect_to_db``, which runs before this.
     """
+    if os.environ.get("WC_DEPLOYMENT_ENVIRONMENT"):
+        logger.info("Wafercad manages initialization through explicit bootstrap")
+        return
     async with _async_session_factory() as db_session:
         any_org = (
             await db_session.execute(select(Organization).limit(1))
