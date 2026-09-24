@@ -316,7 +316,7 @@ export async function initiateSSOLogin(
   orgSlug: string
 ): Promise<SSOAuthorizationResponse> {
   const response = await fetch(
-    `${getAPIUrl()}auth/sso/authorize?org_slug=${encodeURIComponent(orgSlug)}`,
+    `${getAPIUrl()}auth/sso/authorize?org_slug=${encodeURIComponent(orgSlug)}&frontend_origin=${encodeURIComponent(window.location.origin)}`,
     {
       method: 'GET',
       headers: {

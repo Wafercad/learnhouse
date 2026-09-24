@@ -45,6 +45,12 @@ _DISCOVERY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def isolated_state_store(monkeypatch):
+    monkeypatch.setattr(oidc, "get_redis_client", lambda: None)
+    oidc._MEMORY_STATE.clear()
+
+
 @pytest.fixture
 def mock_request():
     r = Mock(spec=Request)

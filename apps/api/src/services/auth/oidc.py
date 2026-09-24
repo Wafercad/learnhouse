@@ -37,6 +37,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.requests import Request
 
 from config.config import OIDCConfig
+from src.services.auth.oidc_transport import callback_config, frontend_route, transport_document
 from src.core.redis import get_redis_client
 from src.db.organizations import Organization
 from src.db.user_organizations import UserOrganization
@@ -168,6 +169,7 @@ async def build_authorization_url(
     cfg: OIDCConfig,
     org_slug: str,
     next_path: Optional[str] = None,
+    frontend_origin: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Return (authorization_url, state) to send the browser to the IdP.
 
@@ -176,8 +178,12 @@ async def build_authorization_url(
     server-side, single-use and already bound to this login, so the destination
     cannot be swapped between the two legs.
     """
-    document = await _discover(cfg.issuer)
-    authorization_endpoint = document.get("authorization_endpoint")
+    try:
+        callback, authorize_page = frontend_route(cfg, frontend_origin)
+        document = transport_document(cfg, await _discover(cfg.endpoint_base or cfg.issuer))
+    except ValueError as exc:
+        raise OIDCError("invalid_configuration", str(exc)) from exc
+    authorization_endpoint = authorize_page or document.get("authorization_endpoint")
     if not authorization_endpoint:
         raise OIDCError("discovery_failed", "IdP discovery is missing authorization_endpoint")
 
@@ -190,6 +196,7 @@ async def build_authorization_url(
             "verifier": verifier,
             "nonce": nonce,
             "org_slug": org_slug,
+            "redirect_uri": callback,
             "next": safe_next_path(next_path),
         },
     )
@@ -197,7 +204,7 @@ async def build_authorization_url(
     params = {
         "response_type": "code",
         "client_id": cfg.client_id,
-        "redirect_uri": cfg.redirect_uri,
+        "redirect_uri": callback,
         "scope": cfg.scopes,
         "state": state,
         "nonce": nonce,
@@ -219,7 +226,11 @@ async def complete_login(
     if stashed is None:
         raise OIDCError("invalid_state", "Unknown or expired login state; please retry.")
 
-    document = await _discover(cfg.issuer)
+    try:
+        cfg = callback_config(cfg, stashed.get("redirect_uri"))
+        document = transport_document(cfg, await _discover(cfg.endpoint_base or cfg.issuer))
+    except ValueError as exc:
+        raise OIDCError("invalid_configuration", str(exc)) from exc
     token_response = await _exchange_code(cfg, document, code, stashed["verifier"])
     id_token = token_response.get("id_token")
     if not id_token:
@@ -271,7 +282,7 @@ def _validate_id_token(
     jwks_uri = document.get("jwks_uri")
     if not jwks_uri:
         raise OIDCError("discovery_failed", "IdP discovery is missing jwks_uri")
-    expected_issuer = document.get("issuer", cfg.issuer)
+    expected_issuer = cfg.issuer
     try:
         # PyJWKClient fetches the JWKS with urllib, whose default
         # ``Python-urllib/x.y`` User-Agent is blocked (HTTP 403) by CDN/WAF bot

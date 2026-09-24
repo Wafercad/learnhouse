@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { getConfig } from '@services/config/config'
+import { getServerAPIUrl } from '@services/config/config'
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -13,7 +13,7 @@ import {
 } from '@services/auth/cookies'
 import { isLocalhost } from '@services/utils/ts/hostUtils'
 
-const BACKEND_URL = (getConfig('NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL') || 'http://localhost:1338').replace(/\/+$/, '')
+const BACKEND_URL = new URL(getServerAPIUrl()).origin
 
 // Paths that return tokens in response body (relative to /api/v1/auth/)
 // `verify-email` auto-signs-in the user on successful email verification, so
