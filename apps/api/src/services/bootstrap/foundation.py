@@ -13,7 +13,11 @@ from src.db.roles import Role
 from src.db.users import User
 from src.db.user_organizations import UserOrganization
 from src.db.api_tokens import APIToken
-from src.security.security import security_hash_password, security_hash_token, security_verify_token
+from src.security.security import (
+    security_hash_password,
+    security_hash_token,
+    security_verify_token,
+)
 from src.services.setup.default_roles import desired_roles
 from .protocol import Conflict, digest, result
 
@@ -32,7 +36,7 @@ def service_rights(roles):
 
 def execute(session, request):
     data, previous = request["data"], request["receipt"]
-    if set(data) != {
+    if set(data) - {"operator_role"} != {
         "slug",
         "name",
         "admin_email",
@@ -41,20 +45,32 @@ def execute(session, request):
         "service_key_env",
     }:
         raise Conflict("invalid_foundation_spec")
+    # The Academy operator can be the platform's federated course author.
+    # Match the explicitly selected role; never promote or rewrite a membership.
+    role_id = {"admin": 1, "course_author": 5}.get(data.get("operator_role", "admin"))
+    if role_id is None:
+        raise Conflict("invalid_operator_role")
     roles = desired_roles()
     definition = digest(
-        {"roles": {r.role_uuid: r.rights for r in roles}, "service_rights": service_rights(roles)}
+        {
+            "roles": {r.role_uuid: r.rights for r in roles},
+            "service_rights": service_rights(roles),
+        }
     )
     receipt, missing = {}, False
     for desired in roles:
         role = session.get(Role, desired.id)
-        if role and (role.role_uuid != desired.role_uuid or role.rights != desired.rights):
+        if role and (
+            role.role_uuid != desired.role_uuid or role.rights != desired.rights
+        ):
             raise Conflict("existing_role_rights_require_review")
         if not role:
             if previous.get("roles"):
                 raise Conflict("role_removed")
             missing = True
-    org = session.exec(select(Organization).where(Organization.slug == data["slug"])).one_or_none()
+    org = session.exec(
+        select(Organization).where(Organization.slug == data["slug"])
+    ).one_or_none()
     owner_uuid = "org_" + str(
         uuid5(NAMESPACE_URL, "wafercad:" + request["scope"] + ":" + data["slug"])
     )
@@ -62,7 +78,9 @@ def execute(session, request):
         raise Conflict("organization_identity_changed")
     if not org and previous.get("org_uuid"):
         raise Conflict("organization_removed")
-    user = session.exec(select(User).where(User.email == data["admin_email"].lower())).one_or_none()
+    user = session.exec(
+        select(User).where(User.email == data["admin_email"].lower())
+    ).one_or_none()
     membership = None
     config = None
     key = None
@@ -71,18 +89,21 @@ def execute(session, request):
             select(OrganizationConfig).where(OrganizationConfig.org_id == org.id)
         ).one_or_none()
         key = session.exec(
-            select(APIToken).where(APIToken.org_id == org.id, APIToken.name == "Wafercad Campus")
+            select(APIToken).where(
+                APIToken.org_id == org.id, APIToken.name == "Wafercad Campus"
+            )
         ).one_or_none()
         receipt.update(org_id=org.id, org_uuid=org.org_uuid, slug=org.slug)
         if user:
             membership = session.exec(
                 select(UserOrganization).where(
-                    UserOrganization.user_id == user.id, UserOrganization.org_id == org.id
+                    UserOrganization.user_id == user.id,
+                    UserOrganization.org_id == org.id,
                 )
             ).one_or_none()
     if user and (
         not membership
-        or membership.role_id != 1
+        or membership.role_id != role_id
         or user.username != data["admin_username"]
         or user.locked_until
     ):
@@ -129,7 +150,9 @@ def execute(session, request):
         raise Conflict("service_key_required")
     if (
         not user
-        and session.exec(select(User).where(User.username == data["admin_username"])).first()
+        and session.exec(
+            select(User).where(User.username == data["admin_username"])
+        ).first()
     ):
         raise Conflict("administrator_username_exists")
     stamp = str(datetime.now())
@@ -140,7 +163,9 @@ def execute(session, request):
     if session.bind.dialect.name == "postgresql":
         # Legacy global roles use fixed IDs. Preserve the sequence high-water
         # mark so subsequent authored/custom roles cannot collide with them.
-        sequence = session.execute(text("SELECT pg_get_serial_sequence('role', 'id')")).scalar()
+        sequence = session.execute(
+            text("SELECT pg_get_serial_sequence('role', 'id')")
+        ).scalar()
         if sequence:
             session.execute(
                 text(
@@ -165,7 +190,9 @@ def execute(session, request):
             OrganizationConfig(
                 org_id=org.id,
                 config=json.loads(
-                    OrganizationConfigV2Base(config_version="2.0", plan="free").model_dump_json()
+                    OrganizationConfigV2Base(
+                        config_version="2.0", plan="free"
+                    ).model_dump_json()
                 ),
                 creation_date=stamp,
                 update_date=stamp,
@@ -188,7 +215,11 @@ def execute(session, request):
         session.flush()
         session.add(
             UserOrganization(
-                user_id=user.id, org_id=org.id, role_id=1, creation_date=stamp, update_date=stamp
+                user_id=user.id,
+                org_id=org.id,
+                role_id=role_id,
+                creation_date=stamp,
+                update_date=stamp,
             )
         )
     if not key:

@@ -21,19 +21,25 @@ def handle(request):
     ):
         raise Conflict("invalid_environment_or_request")
     task = request.get("task")
-    from . import foundation, curriculum, content
+    from . import foundation, curriculum, content, course_pack
 
     owners = {
         "learnhouse-foundation": foundation,
         "learnhouse-curriculum": curriculum,
         "learnhouse-content": content,
+        "learnhouse-course-pack": course_pack,
     }
     if task not in owners:
         raise Conflict("unknown_learnhouse_task")
     # All calls are against this service's configured database, not a request URL.
-    url = os.environ["LEARNHOUSE_SQL_CONNECTION_STRING"].replace("+asyncpg", "+psycopg2")
+    url = os.environ["LEARNHOUSE_SQL_CONNECTION_STRING"].replace(
+        "+asyncpg", "+psycopg2"
+    )
     engine = create_engine(
-        url, hide_parameters=True, pool_pre_ping=True, connect_args={"connect_timeout": 10}
+        url,
+        hide_parameters=True,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 10},
     )
     try:
         with Session(engine) as session, session.begin():
@@ -52,7 +58,9 @@ def handle(request):
             ):
                 raise Conflict("database_target_mismatch")
             response = dispatch(
-                session, request, lambda operation: owners[task].execute(session, operation)
+                session,
+                request,
+                lambda operation: owners[task].execute(session, operation),
             )
             if request["action"] == "apply" and response["status"] != "ready":
                 raise Conflict(response["code"])
@@ -74,7 +82,9 @@ def main():
             code = "existing_data_conflict"
         response = result("conflict", digest("unavailable"), code=code)
     except Exception:
-        response = result("blocked", digest("unavailable"), code="service_prerequisite_failed")
+        response = result(
+            "blocked", digest("unavailable"), code="service_prerequisite_failed"
+        )
     print(json.dumps(response))
 
 
