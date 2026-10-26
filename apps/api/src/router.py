@@ -43,7 +43,10 @@ from src.security.api_token_utils import (
     require_authenticated_user_or_api_token,
     require_non_api_token_user,
 )
-from src.security.service_integration import require_trail_principal
+from src.security.service_integration import (
+    require_trail_principal,
+    service_integration_allowed,
+)
 from src.security.features_utils.plan_check import require_plan, require_plan_for_boards, require_plan_for_certifications, require_plan_for_community, require_plan_for_usergroups, require_plan_for_playgrounds
 
 
@@ -53,6 +56,20 @@ v1_router = APIRouter(prefix="/api/v1")
 # use on routers that contain at least one deliberately-public endpoint).
 async def get_non_api_token_user(user = Depends(get_current_user)):
     """Dependency that rejects API token access."""
+    return await require_non_api_token_user(user)
+
+
+async def get_authoring_principal(user = Depends(get_current_user)):
+    """``get_non_api_token_user``, plus the Cloud Campus service-integration token.
+
+    The course Markdown importer uploads a lesson's images as blocks, and a
+    block upload names the activity it attaches to, so it cannot be done before
+    the activity exists or through any other route. Ordinary org API tokens stay
+    rejected and anonymous access is unchanged; the handler still enforces
+    UPDATE on the parent course via ``check_resource_access``.
+    """
+    if service_integration_allowed(user):
+        return user
     return await require_non_api_token_user(user)
 
 
@@ -178,7 +195,9 @@ v1_router.include_router(
     # anonymous visitors. Anonymous access is gated per-handler: GET block
     # handlers run RBAC + org-membership checks in the service layer; POST
     # block handlers (creates) require ownership via check_resource_access.
-    dependencies=[Depends(get_non_api_token_user)]
+    # The Cloud Campus service token is admitted too (feature-flagged) so the
+    # course Markdown importer can attach a lesson's images.
+    dependencies=[Depends(get_authoring_principal)]
 )
 v1_router.include_router(
     admin_router_module.router,

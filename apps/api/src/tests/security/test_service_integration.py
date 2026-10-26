@@ -145,3 +145,36 @@ async def test_gate_admits_session_user(db, monkeypatch, admin_user):
     _patch_principal(monkeypatch, admin_user)
     result = await si.require_trail_principal(_Req(), db)
     assert result is admin_user
+
+
+# --- block-upload gate (course Markdown importer) ---------------------------
+
+
+def _plain_token(org_id=1):
+    return APITokenUser(
+        id=2,
+        user_uuid="apitoken_plain",
+        username="api_token",
+        org_id=org_id,
+        token_name="ordinary",
+        created_by_user_id=1,
+        is_service_integration=False,
+    )
+
+
+def test_service_integration_allowed_only_for_the_service_token(monkeypatch):
+    monkeypatch.setattr(si, "_feature_enabled", lambda: True)
+    assert si.service_integration_allowed(_service_token()) is True
+    # An ordinary org token stays out: the gate is for the platform's own
+    # integration, not for every token the org has issued.
+    assert si.service_integration_allowed(_plain_token()) is False
+
+
+def test_service_integration_allowed_is_false_when_the_feature_is_off(monkeypatch):
+    monkeypatch.setattr(si, "_feature_enabled", lambda: False)
+    assert si.service_integration_allowed(_service_token()) is False
+
+
+def test_service_integration_allowed_is_false_for_a_session_user(monkeypatch):
+    monkeypatch.setattr(si, "_feature_enabled", lambda: True)
+    assert si.service_integration_allowed(object()) is False
