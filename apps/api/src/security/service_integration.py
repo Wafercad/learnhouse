@@ -47,6 +47,15 @@ def _is_service_token(user: object) -> bool:
     )
 
 
+def service_integration_allowed(user: object) -> bool:
+    """True when ``user`` is the Cloud Campus service token and the feature is on.
+
+    Lets a router admit the platform's own integration without widening access
+    for ordinary org API tokens, which stay rejected.
+    """
+    return _feature_enabled() and _is_service_token(user)
+
+
 async def require_trail_principal(
     request: Request,
     db_session: AsyncSession = Depends(get_db_session),

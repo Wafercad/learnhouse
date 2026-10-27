@@ -1,6 +1,14 @@
 import { cookies } from 'next/headers'
 
-const BACKEND_URL = (process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL || 'http://localhost:1338').replace(/\/+$/, '')
+// Server-side calls go over the container network, never the browser-facing
+// URL: that one is chosen for whichever origin the viewer arrived on, is not
+// necessarily resolvable from inside the container, and dialling it on every
+// render turns a wrong value into a 10-second timeout on each page load.
+const BACKEND_URL = (
+  process.env.LEARNHOUSE_SERVER_API_URL?.replace(/\/api\/v1\/?$/, '') ||
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL ||
+  'http://localhost:1338'
+).replace(/\/+$/, '')
 
 // Cookie names (must match the API routes)
 const ACCESS_TOKEN_COOKIE = 'LH_access'
