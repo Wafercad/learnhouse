@@ -22,7 +22,7 @@ For production deployments or when you need scalable storage, you can use any S3
 
 - **AWS S3**
 - **CloudFlare R2**
-- **MinIO** (self-hosted)
+- **RustFS** or another qualified self-hosted S3-compatible store
 - Any other S3-compatible provider
 
 ```env
@@ -54,14 +54,14 @@ When using S3-compatible storage, make sure the bucket exists and the credential
 
 For most self-hosted installations starting out, filesystem storage is a good default. You can migrate to S3-compatible storage later as your needs grow.
 
-## Using MinIO for Self-Hosted S3
+## Using Private S3-Compatible Storage
 
-If you want S3-compatible storage without relying on a cloud provider, you can run MinIO alongside LearnHouse. MinIO provides an S3-compatible API on your own infrastructure.
+Provision a private S3 endpoint and a content bucket through your deployment system. Wafercad suite deployments use the orchestrator-managed object-storage service; the standalone LearnHouse Compose file does not install a storage administrator or create buckets.
 
-Configure the endpoint URL to point to your MinIO instance:
+Configure the endpoint for the private service network and supply bucket-scoped credentials through your secret manager:
 
 ```env
 LEARNHOUSE_CONTENT_DELIVERY_TYPE=s3api
 LEARNHOUSE_S3_API_BUCKET_NAME=learnhouse-content
-LEARNHOUSE_S3_API_ENDPOINT_URL=http://minio:9000
+LEARNHOUSE_S3_API_ENDPOINT_URL=http://object-storage:9000
 ```
