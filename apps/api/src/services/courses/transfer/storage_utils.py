@@ -83,7 +83,7 @@ def get_storage_client():
         # Cloudflare R2 requires SigV4 and the "auto" region; without this,
         # botocore falls back to SigV2 for presigned URLs (the legacy
         # AWSAccessKeyId/Signature/Expires form), which R2 rejects with 401.
-        # Overridable via LEARNHOUSE_S3_API_REGION for real AWS S3 / MinIO, which
+        # Overridable via LEARNHOUSE_S3_API_REGION for real AWS S3 / compatible endpoints, which
         # validate the region against the endpoint.
         region = os.environ.get("LEARNHOUSE_S3_API_REGION") or "auto"
         _s3_client = boto3.client(
@@ -93,9 +93,9 @@ def get_storage_client():
             config=botocore.config.Config(
                 signature_version="s3v4",
                 # Path-style addressing (bucket in the path, not the host):
-                # required by MinIO and GCS's S3 API, and accepted by R2/AWS.
+                # required by S3-compatible providers and GCS's S3 API, and accepted by R2/AWS.
                 # Without it botocore builds `<bucket>.<endpoint>` (virtual-host
-                # style), which fails DNS against an in-cluster MinIO endpoint.
+                # style), which fails DNS against an private object-storage endpoint.
                 s3={"addressing_style": "path"},
                 connect_timeout=10,
                 read_timeout=60,
