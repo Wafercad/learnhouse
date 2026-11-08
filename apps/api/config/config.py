@@ -382,18 +382,18 @@ def get_learnhouse_config() -> LearnHouseConfig:
 
     env_bucket_name = os.environ.get("LEARNHOUSE_S3_API_BUCKET_NAME")
     env_endpoint_url = os.environ.get("LEARNHOUSE_S3_API_ENDPOINT_URL")
-    bucket_name = (
+    bucket_name = env_bucket_name or (
         yaml_config.get("hosting_config", {})
         .get("content_delivery", {})
         .get("s3api", {})
         .get("bucket_name")
-    ) or env_bucket_name
-    endpoint_url = (
+    )
+    endpoint_url = env_endpoint_url or (
         yaml_config.get("hosting_config", {})
         .get("content_delivery", {})
         .get("s3api", {})
         .get("endpoint_url")
-    ) or env_endpoint_url
+    )
 
     content_delivery = ContentDeliveryConfig(
         type=content_delivery_type,  # type: ignore

@@ -3,6 +3,9 @@ import logging
 from typing import Literal, Optional
 from botocore.exceptions import BotoCoreError, ClientError
 import os
+import mimetypes
+import tempfile
+from pathlib import Path
 from fastapi import HTTPException, UploadFile
 from config.config import get_learnhouse_config
 from src.security.file_validation import validate_upload
@@ -96,6 +99,9 @@ async def upload_content(
     file_and_format: str,
     allowed_formats: Optional[list[str]] = None,
 ):
+    if (not file_and_format or "/" in file_and_format or "\\" in file_and_format
+            or ".." in file_and_format or "\x00" in file_and_format):
+        raise HTTPException(status_code=400, detail="Invalid file name")
     # Get Learnhouse Config
     learnhouse_config = get_learnhouse_config()
 
@@ -115,10 +121,10 @@ async def upload_content(
     # Canonicalize + containment-check the destination so a crafted filename or
     # directory can't escape the content root (prevents path traversal).
     safe_dir = _safe_content_path(type_of_dir, uuid, directory)
-    ensure_directory_exists(safe_dir)
     safe_path = _safe_content_path(type_of_dir, uuid, directory, file_and_format)
 
     if content_delivery == "filesystem":
+        ensure_directory_exists(safe_dir)
         # upload file to server
         with open(safe_path, "wb") as f:
             f.write(file_binary)
@@ -130,35 +136,26 @@ async def upload_content(
 
     elif content_delivery == "s3api":
         s3 = get_storage_client()
-
+        if s3 is None:
+            raise HTTPException(status_code=503, detail="Media storage is unavailable")
         bucket_name = get_s3_bucket_name()
-        local_path = safe_path
-        # The S3 key stays a clean relative content path.
         s3_key = f"content/{type_of_dir}/{uuid}/{directory}/{file_and_format}"
-
-        # Write to local temp file for S3 upload
-        with open(local_path, "wb") as f:
-            f.write(file_binary)
-
-        # Move the MP4 index atom to the front before uploading so long videos
-        # stream/seek smoothly from R2 (no-op for non-MP4 and when ffmpeg is
-        # absent). Done on the temp file so the uploaded object is faststart.
-        # Threaded — the ffmpeg subprocess must not block the event loop.
-        await asyncio.to_thread(ensure_faststart, local_path)
-
-        try:
-            await asyncio.to_thread(s3.upload_file, local_path, bucket_name, s3_key)
-            await asyncio.to_thread(s3.head_object, Bucket=bucket_name, Key=s3_key)
-            logger.debug("S3 upload successful: %s", s3_key)
-        except (ClientError, BotoCoreError) as e:
-            logger.error("S3 upload failed: %s", e)
-            raise HTTPException(status_code=500, detail="File upload to storage failed")
-        finally:
-            # Clean up local temp file after S3 upload
+        # Processing scratch is ephemeral and never a second durable copy.
+        # The context also removes scratch after encoding or upload failure.
+        with tempfile.TemporaryDirectory(prefix="learnhouse-upload-") as scratch:
+            local_path = str(Path(scratch) / ("upload." + file_format))
+            await asyncio.to_thread(Path(local_path).write_bytes, file_binary)
+            await asyncio.to_thread(ensure_faststart, local_path)
+            content_type = mimetypes.guess_type(file_and_format)[0] or "application/octet-stream"
             try:
-                os.remove(local_path)
-            except OSError as cleanup_err:
-                logger.error("Failed to clean up temp file %s: %s", local_path, cleanup_err)
+                await asyncio.to_thread(s3.upload_file, local_path, bucket_name, s3_key,
+                    ExtraArgs={"ContentType": content_type})
+                await asyncio.to_thread(s3.head_object, Bucket=bucket_name, Key=s3_key)
+            except (ClientError, BotoCoreError) as exc:
+                logger.warning("Object storage upload failed (%s)", type(exc).__name__)
+                raise HTTPException(status_code=503, detail="Media storage is unavailable") from exc
+    else:
+        raise HTTPException(status_code=503, detail="Media storage is not configured")
 
 
 async def read_content(
@@ -186,20 +183,32 @@ async def read_content(
     ):
         raise HTTPException(status_code=400, detail="Invalid file name")
 
+    _safe_content_path(type_of_dir, uuid, directory, file_and_format)
     learnhouse_config = get_learnhouse_config()
     content_delivery = learnhouse_config.hosting_config.content_delivery.type
 
     if content_delivery == "s3api":
         s3 = get_storage_client()
+        if s3 is None:
+            raise HTTPException(status_code=503, detail="Media storage is unavailable")
         bucket_name = get_s3_bucket_name()
         s3_key = f"content/{type_of_dir}/{uuid}/{directory}/{file_and_format}"
         try:
             resp = await asyncio.to_thread(s3.get_object, Bucket=bucket_name, Key=s3_key)
-            return await asyncio.to_thread(resp["Body"].read)
-        except (ClientError, BotoCoreError) as e:
-            logger.error("S3 read failed: %s", e)
-            raise HTTPException(status_code=404, detail="File not found")
+            try:
+                return await asyncio.to_thread(resp["Body"].read)
+            finally:
+                resp["Body"].close()
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in {"NoSuchKey", "404", "NotFound"}:
+                raise HTTPException(status_code=404, detail="File not found") from exc
+            raise HTTPException(status_code=503, detail="Media storage is unavailable") from exc
+        except BotoCoreError as exc:
+            raise HTTPException(status_code=503, detail="Media storage is unavailable") from exc
 
+    if content_delivery != "filesystem":
+        raise HTTPException(status_code=503, detail="Media storage is not configured")
     # filesystem
     safe_path = _safe_content_path(type_of_dir, uuid, directory, file_and_format)
     if not os.path.exists(safe_path):

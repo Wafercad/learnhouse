@@ -33,7 +33,8 @@ def _client_error(code: str, operation: str) -> ClientError:
 
 
 @pytest.fixture(autouse=True)
-def reset_storage_utils_state():
+def reset_storage_utils_state(monkeypatch):
+    monkeypatch.setenv("LEARNHOUSE_S3_DIRECT_DELIVERY", "true")
     storage_utils.get_content_delivery_type.cache_clear()
     storage_utils.get_s3_bucket_name.cache_clear()
     storage_utils.is_s3_enabled.cache_clear()

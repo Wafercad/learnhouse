@@ -9,6 +9,7 @@ Supports both local filesystem and S3/R2 cloud storage.
 
 import os
 from pathlib import Path
+from src.services.utils.object_stream import byte_range, stream_object
 from typing import Generator, Tuple, Optional
 
 from src.services.courses.transfer.storage_utils import (
@@ -51,67 +52,15 @@ def get_video_mime_type(file_path: str) -> str:
 
 
 def is_range_unsatisfiable(range_header: Optional[str], file_size: int) -> bool:
-    """
-    Whether a Range request cannot be satisfied per RFC 7233 → caller returns 416.
-
-    Unsatisfiable when: the resource is empty (a Range over 0 bytes), or the
-    requested start is at/after EOF. Suffix ranges (bytes=-N) and malformed
-    headers are treated as satisfiable (fall through to normal handling / 200).
-    """
-    if not range_header:
-        return False
-    if file_size <= 0:
-        return True
-    spec = range_header.replace("bytes=", "").strip()
-    if spec.startswith("-"):  # suffix range — always satisfiable for size>0
-        return False
     try:
-        start = int(spec.split("-")[0])
-    except (ValueError, IndexError):
+        byte_range(range_header, file_size)
         return False
-    return start > file_size - 1
+    except ValueError:
+        return True
 
 
 def parse_range_header(range_header: Optional[str], file_size: int) -> Tuple[int, int]:
-    """
-    Parse the HTTP Range header to determine byte range.
-
-    Args:
-        range_header: The value of the Range header (e.g., 'bytes=0-1023')
-        file_size: Total size of the file in bytes
-
-    Returns:
-        Tuple of (start_byte, end_byte)
-    """
-    if not range_header:
-        return 0, file_size - 1
-
-    try:
-        # Parse "bytes=start-end" format
-        range_spec = range_header.replace('bytes=', '')
-
-        if range_spec.startswith('-'):
-            # Suffix range: -500 means last 500 bytes
-            suffix_length = int(range_spec[1:])
-            start = max(0, file_size - suffix_length)
-            end = file_size - 1
-        elif range_spec.endswith('-'):
-            # Open-ended range: 500- means from byte 500 to end
-            start = int(range_spec[:-1])
-            end = file_size - 1
-        else:
-            # Full range: 0-1023
-            parts = range_spec.split('-')
-            start = int(parts[0])
-            end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-
-        # Ensure valid range
-        start = max(0, min(start, file_size - 1))
-        end = max(start, min(end, file_size - 1))
-
-        return start, end
-    except (ValueError, IndexError):
-        return 0, file_size - 1
+    return byte_range(range_header, file_size)
 
 
 def stream_video_file(
@@ -187,26 +136,7 @@ def _stream_from_s3(
             return
         end = file_size - 1
 
-    bytes_remaining = end - start + 1
-    current_pos = start
-
-    while bytes_remaining > 0:
-        chunk_end = min(current_pos + chunk_size - 1, end)
-        range_str = f"bytes={current_pos}-{chunk_end}"
-
-        response = s3_client.get_object(
-            Bucket=bucket,
-            Key=file_path,
-            Range=range_str,
-        )
-        data = response['Body'].read()
-
-        if not data:
-            break
-
-        bytes_remaining -= len(data)
-        current_pos += len(data)
-        yield data
+    yield from stream_object(s3_client, bucket, file_path, start, end, chunk_size)
 
 
 def get_file_info(file_path: str) -> Tuple[int, str, bool]:
