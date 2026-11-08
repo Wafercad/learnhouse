@@ -22,7 +22,18 @@ RUN rm -f .env*
 ARG LEARNHOUSE_PUBLIC=false
 RUN if [ "$LEARNHOUSE_PUBLIC" = "true" ]; then rm -rf /app/ee; fi
 
+ARG release_media_external=false
+ENV WC_PLATFORM_MEDIA_ENABLED=$release_media_external
+COPY --from=release_media_tools /split.mjs /tmp/split-media.mjs
 RUN bun run build
+RUN mkdir -p /release-media && \
+    if [ "$release_media_external" = true ]; then \
+      bun scripts/extract-release-media.mjs /tmp/split-media.mjs; \
+    else echo '{}' > release-media.json; echo '{}' > release-media-manifest.json; fi
+
+FROM scratch AS release-media
+COPY --from=builder /release-media /
+
 
 # Production image — use Node for the Next.js standalone server
 FROM node:24-alpine AS runner
@@ -44,6 +55,7 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+COPY --from=builder --chown=nextjs:nodejs /app/release-media.json /app/release-media-manifest.json ./
 COPY --chown=nextjs:nodejs server-wrapper.js ./
 RUN chmod +x server-wrapper.js
 
