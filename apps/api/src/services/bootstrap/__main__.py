@@ -21,13 +21,14 @@ def handle(request):
     ):
         raise Conflict("invalid_environment_or_request")
     task = request.get("task")
-    from . import foundation, curriculum, content, course_pack
+    from . import foundation, curriculum, content, course_pack, campus_webhook
 
     owners = {
         "learnhouse-foundation": foundation,
         "learnhouse-curriculum": curriculum,
         "learnhouse-content": content,
         "learnhouse-course-pack": course_pack,
+        "learnhouse-campus-webhook": campus_webhook,
     }
     if task not in owners:
         raise Conflict("unknown_learnhouse_task")
