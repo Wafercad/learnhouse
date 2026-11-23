@@ -1,3 +1,4 @@
+import { isReleaseMedia } from './services/media/platform-release.mjs'
 import { getAPIUrl } from './services/config/config'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
@@ -228,6 +229,9 @@ export const config = {
 }
 
 export default async function proxy(req: NextRequest) {
+  // Published platform artwork has no tenant identity. Exact manifest allowlist.
+  if (isReleaseMedia(req.nextUrl.pathname)) return NextResponse.next()
+
   const instance = await getInstanceInfo()
   const { pathname, search } = req.nextUrl
   const fullhost = req.headers.get('host')

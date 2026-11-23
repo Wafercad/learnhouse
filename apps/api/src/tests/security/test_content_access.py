@@ -1,367 +1,183 @@
-"""
-Unit tests for content access control (local_content.py and content_files.py).
-
-Tests cover:
-- Path traversal prevention
-- Public course content access for anonymous users
-- Private course content requires authentication
-- Public podcast content access
-- Private podcast content requires authentication
-- Org-level content always public
-- User avatars always public
-- Unknown paths require auth (safe default)
-"""
-
+"""Real database checks for media hierarchy, publication and tenant authorization."""
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 from fastapi import HTTPException
+from src.db.courses.activities import Activity, ActivityTypeEnum, ActivitySubTypeEnum
+from src.db.podcasts.podcasts import Podcast
+from src.db.podcasts.episodes import PodcastEpisode
+from src.db.users import AnonymousUser, APITokenUser
+from src.db.usergroups import UserGroup
+from src.db.usergroup_resources import UserGroupResource
+from src.security.content_access import check_content_access
 
 
-class TestValidateContentPath:
-    """Test _normalize_content_relpath in local_content.py."""
-
-    def _validate(self, path):
-        from src.routers.local_content import _normalize_content_relpath
-        return _normalize_content_relpath(path)
-
-    def test_valid_path(self):
-        assert self._validate("orgs/abc/courses/def/thumbnail.png") is not None
-
-    def test_valid_deep_path(self):
-        assert self._validate("orgs/abc/courses/def/activities/ghi/video.mp4") is not None
-
-    def test_directory_traversal_dotdot(self):
-        assert self._validate("../etc/passwd") is None
-
-    def test_directory_traversal_middle(self):
-        assert self._validate("orgs/abc/../../etc/passwd") is None
-
-    def test_absolute_path(self):
-        assert self._validate("/etc/passwd") is None
-
-    def test_null_byte(self):
-        assert self._validate("orgs/abc\x00.png") is None
-
-    def test_url_encoded_dotdot(self):
-        """URL-encoded ../ should be caught by double-decode."""
-        assert self._validate("orgs/%2e%2e/%2e%2e/etc/passwd") is None
-
-    def test_double_encoded_dotdot(self):
-        """Double URL-encoded ../ should be caught."""
-        assert self._validate("orgs/%252e%252e/etc/passwd") is None
-
-    def test_backslash_traversal(self):
-        assert self._validate("orgs\\..\\..\\etc\\passwd") is None
-
-    def test_user_avatar_path(self):
-        assert self._validate("users/user_abc/avatars/photo.jpg") is not None
+@pytest.fixture
+async def lesson(db, course, org):
+    value = Activity(id=451, name="Lesson", activity_uuid="activity_media",
+        course_id=course.id, org_id=org.id, published=True,
+        activity_type=ActivityTypeEnum.TYPE_CUSTOM,
+        activity_sub_type=ActivitySubTypeEnum.SUBTYPE_CUSTOM)
+    db.add(value)
+    await db.commit()
+    return value
 
 
-class TestCheckContentAccess:
-    """Test _check_content_access in local_content.py."""
-
-    def _make_anon_user(self):
-        from src.db.users import AnonymousUser
-        return AnonymousUser()
-
-    def _make_auth_user(self):
-        user = MagicMock()
-        user.id = 1
-        user.user_uuid = "user_123"
-        return user
-
-    def _make_db_session(self, course=None, podcast=None):
-        session = MagicMock()
-        execute_result = MagicMock()
-        if course is not None:
-            execute_result.scalars.return_value.first.return_value = course
-        elif podcast is not None:
-            execute_result.scalars.return_value.first.return_value = podcast
-        else:
-            execute_result.scalars.return_value.first.return_value = None
-        session.execute = AsyncMock(return_value=execute_result)
-        return session
-
-    def _make_course(self, public=True):
-        course = MagicMock()
-        course.public = public
-        course.course_uuid = "course_abc"
-        return course
-
-    def _make_podcast(self, public=True):
-        podcast = MagicMock()
-        podcast.public = public
-        podcast.podcast_uuid = "podcast_abc"
-        return podcast
-
-    @pytest.mark.asyncio
-    async def test_public_course_activity_anonymous(self):
-        """Anonymous users can access activity content of public courses."""
-        from src.routers.local_content import _check_content_access
-        course = self._make_course(public=True)
-        db = self._make_db_session(course=course)
-        # Should not raise
-        await _check_content_access(
-            "orgs/org1/courses/course_abc/activities/act1/video.mp4",
-            self._make_anon_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_submission_file_delegates_to_access_control(self):
-        """A submission-file sub-path is routed to enforce_submission_file_access
-        (owner/instructor gate), NOT the generic activity grant below."""
-        from unittest.mock import patch
-        import src.routers.local_content as lc
-
-        path = ("orgs/org1/courses/course_abc/activities/act1/assignments/"
-                "asgn1/tasks/task1/subs/submission_x.pdf")
-        db = self._make_db_session()
-        with patch.object(lc, "enforce_submission_file_access", new_callable=AsyncMock) as gate:
-            await lc._check_content_access(path, MagicMock(), db)
-        gate.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_submission_file_delegates_to_access_control_s3_router(self):
-        """Same submission-file gating in the S3 content-files router."""
-        from unittest.mock import patch
-        import src.routers.content_files as cf
-
-        path = ("orgs/org1/courses/course_abc/activities/act1/assignments/"
-                "asgn1/tasks/task1/subs/submission_x.pdf")
-        db = self._make_db_session()
-        with patch.object(cf, "enforce_submission_file_access", new_callable=AsyncMock) as gate:
-            await cf._check_content_access(path, MagicMock(), db)
-        gate.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_private_course_activity_anonymous_rejected(self):
-        """Anonymous users cannot access activity content of private courses."""
-        from src.routers.local_content import _check_content_access
-        course = self._make_course(public=False)
-        db = self._make_db_session(course=course)
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "orgs/org1/courses/course_abc/activities/act1/video.mp4",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_private_course_activity_authenticated(self):
-        """Authenticated users can access private course activity content."""
-        from src.routers.local_content import _check_content_access
-        course = self._make_course(public=False)
-        db = self._make_db_session(course=course)
-        # Should not raise
-        await _check_content_access(
-            "orgs/org1/courses/course_abc/activities/act1/video.mp4",
-            self._make_auth_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_course_not_found_anonymous_rejected(self):
-        """If course doesn't exist, anonymous users are rejected."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()  # returns None
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "orgs/org1/courses/course_abc/activities/act1/video.mp4",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_public_podcast_episode_anonymous(self):
-        """Anonymous users can access episode content of public podcasts."""
-        from src.routers.local_content import _check_content_access
-        podcast = self._make_podcast(public=True)
-        db = self._make_db_session(podcast=podcast)
-        await _check_content_access(
-            "orgs/org1/podcasts/podcast_abc/episodes/ep1/audio.mp3",
-            self._make_anon_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_private_podcast_episode_anonymous_rejected(self):
-        """Anonymous users cannot access episode content of private podcasts."""
-        from src.routers.local_content import _check_content_access
-        podcast = self._make_podcast(public=False)
-        db = self._make_db_session(podcast=podcast)
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "orgs/org1/podcasts/podcast_abc/episodes/ep1/audio.mp3",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_course_thumbnail_always_public(self):
-        """Course thumbnails (no /activities/) are always public."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()
-        # Should not raise even for anonymous
-        await _check_content_access(
-            "orgs/org1/courses/course_abc/thumbnail.png",
-            self._make_anon_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_org_logo_always_public(self):
-        """Org-level content is always public."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()
-        await _check_content_access(
-            "orgs/org1/logo.png",
-            self._make_anon_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_user_avatar_always_public(self):
-        """User avatars are always public."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()
-        await _check_content_access(
-            "users/user_abc/avatars/photo.jpg",
-            self._make_anon_user(), db
-        )
-
-    @pytest.mark.asyncio
-    async def test_unknown_path_anonymous_rejected(self):
-        """Unknown path patterns require auth as a safe default."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "something/unknown/file.txt",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_unknown_path_authenticated_rejected(self):
-        """Unknown path patterns are denied for authenticated users (deny-by-default)."""
-        from src.routers.local_content import _check_content_access
-        db = self._make_db_session()
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "something/unknown/file.txt",
-                self._make_auth_user(), db
-            )
-        assert exc_info.value.status_code == 403
+def path(org, course, lesson):
+    return f"orgs/{org.org_uuid}/courses/{course.course_uuid}/activities/{lesson.activity_uuid}/video/a.mp4"
 
 
-class TestS3ContentPathValidation:
-    """Test _validate_content_path in content_files.py (S3 router)."""
-
-    def _validate(self, path):
-        from src.routers.content_files import _validate_content_path
-        return _validate_content_path(path)
-
-    def test_valid_path(self):
-        assert self._validate("orgs/abc/courses/def/thumbnail.png") is not None
-
-    def test_directory_traversal(self):
-        assert self._validate("../etc/passwd") is None
-
-    def test_null_byte(self):
-        assert self._validate("file\x00.txt") is None
-
-    def test_url_encoded_traversal(self):
-        assert self._validate("%2e%2e/etc/passwd") is None
-
-    def test_absolute_path(self):
-        assert self._validate("/etc/passwd") is None
+async def test_public_published_lesson_and_catalogue(db, org, course, lesson):
+    await check_content_access(path(org, course, lesson), AnonymousUser(), db)
+    await check_content_access(f"orgs/{org.org_uuid}/courses/{course.course_uuid}/thumbnails/a.png", AnonymousUser(), db)
 
 
-class TestS3ContentAccess:
-    """Test _check_content_access in content_files.py (S3 router)."""
+async def test_wrong_org_missing_and_wrong_parent_child_denied(db, org, other_org, course, lesson, admin_user):
+    value = path(org, course, lesson)
+    for bad in [value.replace(org.org_uuid, other_org.org_uuid),
+                value.replace(lesson.activity_uuid, "activity_missing"),
+                value.replace(course.course_uuid, "course_missing"),
+                value.replace("/activities/", "/secret/")]:
+        with pytest.raises(HTTPException) as error:
+            await check_content_access(bad, admin_user, db)
+        assert error.value.status_code == 403
 
-    def _make_anon_user(self):
-        from src.db.users import AnonymousUser
-        return AnonymousUser()
 
-    def _make_auth_user(self):
-        user = MagicMock()
-        user.id = 1
-        return user
+async def test_private_lesson_requires_real_course_grant(db, org, course, lesson, regular_user, admin_user):
+    course.public = False
+    db.add(course)
+    db.add(UserGroup(id=77, org_id=org.id, name="Enrolled learners", description="Restricted"))
+    db.add(UserGroupResource(usergroup_id=77, org_id=org.id, resource_uuid=course.course_uuid))
+    await db.commit()
+    for caller in [AnonymousUser(), regular_user, APITokenUser(org_id=999)]:
+        try:
+            await check_content_access(path(org, course, lesson), caller, db)
+        except HTTPException:
+            continue
+        pytest.fail(f"Unexpected grant for {type(caller).__name__}")
+    await check_content_access(path(org, course, lesson), admin_user, db)
 
-    def _make_db_session(self, course=None, podcast=None):
-        session = MagicMock()
-        execute_result = MagicMock()
-        if course is not None:
-            execute_result.scalars.return_value.first.return_value = course
-        elif podcast is not None:
-            execute_result.scalars.return_value.first.return_value = podcast
-        else:
-            execute_result.scalars.return_value.first.return_value = None
-        session.execute = AsyncMock(return_value=execute_result)
-        return session
 
-    def _make_course(self, public=True):
-        course = MagicMock()
-        course.public = public
-        return course
+async def test_unpublished_lesson_needs_edit_permission(db, org, course, lesson, regular_user, admin_user):
+    lesson.published = False
+    db.add(lesson)
+    await db.commit()
+    for caller in [AnonymousUser(), regular_user]:
+        with pytest.raises(HTTPException):
+            await check_content_access(path(org, course, lesson), caller, db)
+    await check_content_access(path(org, course, lesson), admin_user, db)
 
-    @pytest.mark.asyncio
-    async def test_public_course_anonymous_allowed(self):
-        from src.routers.content_files import _check_content_access
-        course = self._make_course(public=True)
-        db = self._make_db_session(course=course)
-        await _check_content_access(
-            "orgs/org1/courses/c1/activities/a1/file.mp4",
-            self._make_anon_user(), db
-        )
 
-    @pytest.mark.asyncio
-    async def test_private_course_anonymous_rejected(self):
-        from src.routers.content_files import _check_content_access
-        course = self._make_course(public=False)
-        db = self._make_db_session(course=course)
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "orgs/org1/courses/c1/activities/a1/file.mp4",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 401
+async def test_public_course_draft_not_anonymous(db, org, course, lesson):
+    course.published = False
+    db.add(course)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await check_content_access(path(org, course, lesson), AnonymousUser(), db)
 
-    @pytest.mark.asyncio
-    async def test_user_avatar_public(self):
-        from src.routers.content_files import _check_content_access
-        db = self._make_db_session()
-        await _check_content_access(
-            "users/user1/avatars/pic.jpg",
-            self._make_anon_user(), db
-        )
 
-    @pytest.mark.asyncio
-    async def test_org_content_public(self):
-        from src.routers.content_files import _check_content_access
-        db = self._make_db_session()
-        await _check_content_access(
-            "orgs/org1/logo.png",
-            self._make_anon_user(), db
-        )
+async def test_podcast_hierarchy_and_publication(db, org, other_org):
+    podcast = Podcast(id=92, name="Podcast", org_id=org.id, podcast_uuid="podcast_media",
+                      public=True, published=True)
+    episode = PodcastEpisode(id=93, title="Episode", org_id=org.id, podcast_id=92,
+                             episode_uuid="episode_media", published=True)
+    db.add(podcast)
+    db.add(episode)
+    await db.commit()
+    value = f"orgs/{org.org_uuid}/podcasts/podcast_media/episodes/episode_media/audio/a.mp3"
+    await check_content_access(value, AnonymousUser(), db)
+    for bad in [value.replace(org.org_uuid, other_org.org_uuid), value.replace("episode_media", "episode_missing")]:
+        with pytest.raises(HTTPException):
+            await check_content_access(bad, AnonymousUser(), db)
+    episode.published = False
+    db.add(episode)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await check_content_access(value, AnonymousUser(), db)
 
-    @pytest.mark.asyncio
-    async def test_unknown_path_anonymous_rejected_401(self):
-        from src.routers.content_files import _check_content_access
-        db = self._make_db_session()
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "something/unknown/file.txt",
-                self._make_anon_user(), db
-            )
-        assert exc_info.value.status_code == 401
 
-    @pytest.mark.asyncio
-    async def test_unknown_path_authenticated_rejected_403(self):
-        # content_files.py line 192: an authenticated (non-anon) user hitting an
-        # unrecognized path pattern is denied with 403 (deny-by-default).
-        from src.routers.content_files import _check_content_access
-        db = self._make_db_session()
-        with pytest.raises(HTTPException) as exc_info:
-            await _check_content_access(
-                "something/unknown/file.txt",
-                self._make_auth_user(), db
-            )
-        assert exc_info.value.status_code == 403
+@pytest.mark.parametrize("value", [
+    "orgs/org/logos/logo.png", "orgs/org/landing/intro.mp4",
+    "users/user/avatars/avatar.png",
+])
+async def test_only_designated_public_media_paths(db, value):
+    await check_content_access(value, AnonymousUser(), db)
+
+
+@pytest.mark.parametrize("value", [
+    "orgs/org/private/secret.pdf", "orgs/org/media/random/video.mp4",
+    "users/user/export.zip", "users/user/avatars/script.html", "misc/file.txt",
+])
+async def test_unknown_paths_fail_closed(db, value):
+    with pytest.raises(HTTPException) as error:
+        await check_content_access(value, AnonymousUser(), db)
+    assert error.value.status_code == 401
+
+async def test_restricted_course_membership_revocation(db, org, course, lesson, regular_user):
+    from src.db.usergroup_user import UserGroupUser
+    course.public = False
+    group = UserGroup(id=78, org_id=org.id, name="Learners", description="Enrolled")
+    db.add(course)
+    db.add(group)
+    db.add(UserGroupResource(usergroup_id=78, org_id=org.id, resource_uuid=course.course_uuid))
+    member = UserGroupUser(usergroup_id=78, user_id=regular_user.id, org_id=org.id)
+    db.add(member)
+    await db.commit()
+    await check_content_access(path(org, course, lesson), regular_user, db)
+    await db.delete(member)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await check_content_access(path(org, course, lesson), regular_user, db)
+
+
+async def test_library_media_uses_owner_org_and_resource_policy(db, org, other_org):
+    from src.db.media.media import Media
+    media = Media(id=71, name="Preview", media_uuid="media_preview", org_id=org.id, public=True)
+    db.add(media)
+    await db.commit()
+    value = f"orgs/{org.org_uuid}/media/media_preview/a.png"
+    await check_content_access(value, AnonymousUser(), db)
+    for bad in [value.replace(org.org_uuid, other_org.org_uuid),
+                value.replace("media_preview", "media_missing"),
+                value.replace("media_preview", "course_wrong")]:
+        with pytest.raises(HTTPException):
+            await check_content_access(bad, AnonymousUser(), db)
+
+
+async def test_incomplete_child_path_and_submission_require_checks(db, org, course, lesson):
+    value = path(org, course, lesson)
+    with pytest.raises(HTTPException):
+        await check_content_access(value.rsplit("/", 2)[0], AnonymousUser(), db)
+    submission = value.rsplit("/", 2)[0] + "/assignments/assignment_x/tasks/task_x/subs/file.pdf"
+    with pytest.raises(HTTPException):
+        await check_content_access(submission, AnonymousUser(), db)
+
+
+async def test_playground_thumbnail_reuses_publication_and_access(db, org, other_org, regular_user):
+    from src.db.playgrounds import Playground, PlaygroundAccessType
+    pg = Playground(id=811, name="Media qualification", org_id=org.id,
+                    playground_uuid="playground_media", created_by=regular_user.id,
+                    access_type=PlaygroundAccessType.PUBLIC, published=True)
+    db.add(pg)
+    await db.commit()
+    value = f"orgs/{org.org_uuid}/playgrounds/playground_media/thumbnails/a.png"
+    await check_content_access(value, AnonymousUser(), db)
+    for bad in [value.replace(org.org_uuid, other_org.org_uuid),
+                value.replace("playground_media", "missing"),
+                value.replace("/thumbnails/", "/private/"),
+                value.replace("a.png", "script.html")]:
+        with pytest.raises(HTTPException):
+            await check_content_access(bad, AnonymousUser(), db)
+    with pytest.raises(HTTPException):
+        await check_content_access(value, APITokenUser(org_id=other_org.id), db)
+    pg.published = False
+    db.add(pg)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await check_content_access(value, AnonymousUser(), db)
+    await check_content_access(value, regular_user, db)
+    pg.published = True
+    pg.access_type = PlaygroundAccessType.RESTRICTED
+    db.add(pg)
+    await db.commit()
+    with pytest.raises(HTTPException):
+        await check_content_access(value, AnonymousUser(), db)
+    await check_content_access(value, regular_user, db)

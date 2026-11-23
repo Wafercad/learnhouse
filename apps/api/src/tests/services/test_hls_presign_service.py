@@ -1,8 +1,17 @@
 """Unit tests for generate_presigned_get_url in storage_utils."""
 
 from unittest.mock import Mock
+from types import SimpleNamespace
+import pytest
 
 import src.services.courses.transfer.storage_utils as storage_utils
+
+@pytest.fixture(autouse=True)
+def direct_storage_policy(monkeypatch):
+    monkeypatch.setenv("LEARNHOUSE_S3_DIRECT_DELIVERY", "true")
+    monkeypatch.setattr(storage_utils, "get_learnhouse_config", lambda: SimpleNamespace(
+        hosting_config=SimpleNamespace(content_delivery=SimpleNamespace(
+            s3api=SimpleNamespace(endpoint_url="https://storage.example.test")))))
 
 
 def test_presign_returns_none_when_s3_disabled(monkeypatch):

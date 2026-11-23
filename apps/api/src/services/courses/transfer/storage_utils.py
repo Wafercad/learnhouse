@@ -16,6 +16,9 @@ import boto3
 import botocore.config
 from botocore.exceptions import ClientError, NoCredentialsError
 from config.config import get_learnhouse_config
+from src.services.utils.media_delivery import (
+    DEFAULT_SIGNED_URL_TTL, direct_delivery_allowed, signed_url_ttl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +121,7 @@ def is_s3_enabled() -> bool:
     return get_content_delivery_type() == "s3api"
 
 
-# Presigned-URL lifetime (24h). Must stay comfortably longer than the redirect
-# Cache-Control window (see stream.py) so a browser-cached 302 never points at
-# an already-expired URL. 24h TTL + 6h cache leaves ≥18h of validity margin.
-PRESIGNED_URL_TTL_SECONDS = 24 * 60 * 60
+PRESIGNED_URL_TTL_SECONDS = DEFAULT_SIGNED_URL_TTL
 
 
 def generate_presigned_get_url(
@@ -135,7 +135,8 @@ def generate_presigned_get_url(
     Returns None when S3 is not enabled, the client is unavailable, or signing
     fails — callers fall back to streaming the file through the API.
     """
-    if not is_s3_enabled():
+    endpoint = get_learnhouse_config().hosting_config.content_delivery.s3api.endpoint_url
+    if not is_s3_enabled() or not direct_delivery_allowed(endpoint):
         return None
 
     s3_client = get_storage_client()
@@ -146,7 +147,7 @@ def generate_presigned_get_url(
         return s3_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": get_s3_bucket_name(), "Key": s3_key},
-            ExpiresIn=expires_in,
+            ExpiresIn=signed_url_ttl(expires_in),
         )
     except Exception as e:
         logger.error("Failed to presign URL for %s: %s", s3_key, e)
@@ -177,7 +178,11 @@ def read_file_content(file_path: str) -> Optional[bytes]:
                     Bucket=get_s3_bucket_name(),
                     Key=file_path,
                 )
-                return response['Body'].read()
+                body = response['Body']
+                try:
+                    return body.read()
+                finally:
+                    body.close()
             except ClientError as e:
                 error_code = e.response.get('Error', {}).get('Code', '')
                 if error_code == 'NoSuchKey':

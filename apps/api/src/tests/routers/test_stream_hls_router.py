@@ -168,16 +168,16 @@ def test_redirect_to_storage_none_when_s3_disabled(monkeypatch):
     assert stream_mod._redirect_to_storage("content/x.mp4") is None
 
 
-def test_redirect_to_storage_sets_cacheable_header(monkeypatch):
+def test_redirect_to_storage_does_not_cache_authorization(monkeypatch):
     monkeypatch.setattr(stream_mod, "is_s3_enabled", lambda: True)
     monkeypatch.setattr(stream_mod, "generate_presigned_get_url", lambda key: "https://r2/x")
     resp = stream_mod._redirect_to_storage("content/x.mp4")
     assert resp is not None
     assert resp.status_code == 302
     cc = resp.headers["cache-control"]
-    # Must be cacheable (not no-store) so the browser stops re-resolving per range.
-    assert "no-store" not in cc
-    assert "max-age=21600" in cc and "private" in cc
+    # Do not reuse an authorization-sensitive redirect after logout.
+    assert "no-store" in cc
+    assert "no-store" in cc and "private" in cc
 
 
 async def test_activity_video_redirects_to_presigned_with_cache(
@@ -197,7 +197,7 @@ async def test_activity_video_redirects_to_presigned_with_cache(
     )
     assert r.status_code == 302
     assert r.headers["location"].startswith("https://r2.example/")
-    assert "max-age=21600" in r.headers["cache-control"]
+    assert "no-store" in r.headers["cache-control"]
 
 
 async def test_activity_video_missing_object_returns_404_in_s3_mode(
@@ -275,7 +275,7 @@ async def test_block_video_redirects_in_s3(
         follow_redirects=False,
     )
     assert r.status_code == 302
-    assert "max-age=21600" in r.headers["cache-control"]
+    assert "no-store" in r.headers["cache-control"]
 
 
 async def test_block_video_missing_returns_404(

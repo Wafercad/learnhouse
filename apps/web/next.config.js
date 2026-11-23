@@ -9,7 +9,22 @@ const nextConfig = {
   // handling on /ingest/* doesn't 308-redirect ingestion requests.
   skipTrailingSlashRedirect: true,
   async rewrites() {
-    return [
+    const media = process.env.WC_PLATFORM_MEDIA_ENABLED === 'true';
+    const fs = require('fs'), path = require('path');
+    const publicPaths = [];
+    function inventory(dir, prefix = '') {
+      for (const entry of fs.readdirSync(dir, { withFileTypes:true })) {
+        const name = prefix + entry.name;
+        if (entry.isDirectory()) inventory(path.join(dir,entry.name),name+'/');
+        else if (/\.(png|jpe?g|webp|avif|svg|gif|ico|mp4|webm|mp3|wav|ogg|pdf)$/i.test(name))
+          publicPaths.push({source:'/'+name,destination:'/api/platform-media/'+name});
+      }
+    }
+    if (media) inventory(path.join(__dirname,'public'));
+    return { beforeFiles: [
+      ...publicPaths,
+      ...(media ? [{source:'/_next/static/media/:file*.:ext(png|jpg|jpeg|webp|avif|svg|gif|ico|mp4|webm|mp3|wav|ogg|pdf)',destination:'/api/platform-media/_next/static/media/:file*.:ext'}] : []),
+    ], afterFiles: [
       // PostHog reverse proxy (EU cloud) — served same-origin so adblockers
       // don't strip ingestion. The client SDK points at api_host: '/ingest'.
       {
@@ -20,7 +35,7 @@ const nextConfig = {
         source: '/ingest/:path*',
         destination: 'https://eu.i.posthog.com/:path*',
       },
-    ]
+    ], fallback: [] }
   },
   async headers() {
     return [

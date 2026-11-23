@@ -39,6 +39,8 @@ from src.services.utils.video_streaming import (
     CHUNK_SIZE,
 )
 from src.services.utils.hls_playlist import rewrite_playlist
+from src.services.utils.media_delivery import PRIVATE_MEDIA_HEADERS
+from src.services.utils.object_stream import normalize_range_header
 
 router = APIRouter()
 
@@ -73,16 +75,8 @@ def _safe_hls_relpath(hls_path: str) -> str | None:
         return None
     return "/".join(parts)
 
-# The 302 to the presigned URL is cacheable for a bounded window. This is
-# critical for smooth playback: without it (no-store) the browser re-resolves
-# the redirect — re-running RBAC + presign (~0.3–1.3s) — on every seek and
-# reconnect, starving the buffer and causing periodic stalls. Caching lets the
-# browser resolve once and reuse the same R2 URL for all Range requests. The
-# 6h window stays well under the 24h presign TTL so a cached 302 never points
-# at an expired URL. "private" keeps shared caches (Cloudflare) from storing a
-# user-scoped signed URL.
-_PRESIGNED_REDIRECT_HEADERS = {"Cache-Control": "private, max-age=21600"}
-
+# Authorization-sensitive redirects must not survive logout in caches.
+_PRESIGNED_REDIRECT_HEADERS = PRIVATE_MEDIA_HEADERS
 
 def _redirect_to_storage(file_path: str) -> RedirectResponse | None:
     """
@@ -108,77 +102,22 @@ def _redirect_to_storage(file_path: str) -> RedirectResponse | None:
     )
 
 
-async def _verify_course_activity_access(
-    request: Request,
-    course_uuid: str,
-    activity_uuid: str,
-    current_user: PublicUser | AnonymousUser | APITokenUser,
-    db_session: AsyncSession,
-) -> None:
-    """
-    Verify user has read access to the course/activity.
-
-    SECURITY: This ensures that:
-    - Anonymous users can only access public+published courses
-    - Authenticated users can access courses they have permission to view
-    - Activity must belong to the specified course
-    """
-    # Verify activity exists and belongs to the course
-    activity_stmt = select(Activity).where(Activity.activity_uuid == activity_uuid)
-    activity = (await db_session.execute(activity_stmt)).scalars().first()
-
-    if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Verify course exists and activity belongs to it
-    course_stmt = select(Course).where(Course.id == activity.course_id)
-    course = (await db_session.execute(course_stmt)).scalars().first()
-
-    if not course or course.course_uuid != course_uuid:
-        raise HTTPException(status_code=404, detail="Course not found or activity doesn't belong to course")
-
-    # RBAC check - verify user can read this course
-    checker = ResourceAccessChecker(request, db_session, current_user)
-    decision = await checker.check_access(course_uuid, AccessAction.READ, AccessContext.PUBLIC_VIEW)
-
-    if not decision.allowed:
-        raise HTTPException(status_code=403, detail=decision.reason)
+async def _verify_course_activity_access(request, course_uuid, activity_uuid,
+                                         current_user, db_session, *, org_uuid):
+    from src.security.content_access import check_content_access
+    await check_content_access(
+        f"orgs/{org_uuid}/courses/{course_uuid}/activities/{activity_uuid}/media",
+        current_user, db_session, request,
+    )
 
 
-async def _verify_podcast_episode_access(
-    request: Request,
-    podcast_uuid: str,
-    episode_uuid: str,
-    current_user: PublicUser | AnonymousUser | APITokenUser,
-    db_session: AsyncSession,
-) -> None:
-    """
-    Verify user has read access to the podcast/episode.
-
-    SECURITY: This ensures that:
-    - Anonymous users can only access public+published podcasts
-    - Authenticated users can access podcasts they have permission to view
-    - Episode must belong to the specified podcast
-    """
-    # Verify episode exists and belongs to the podcast
-    episode_stmt = select(PodcastEpisode).where(PodcastEpisode.episode_uuid == episode_uuid)
-    episode = (await db_session.execute(episode_stmt)).scalars().first()
-
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    podcast_stmt = select(Podcast).where(Podcast.id == episode.podcast_id)
-    podcast = (await db_session.execute(podcast_stmt)).scalars().first()
-
-    if not podcast or podcast.podcast_uuid != podcast_uuid:
-        raise HTTPException(status_code=404, detail="Podcast not found or episode doesn't belong to podcast")
-
-    # RBAC check - verify user can read this podcast
-    checker = ResourceAccessChecker(request, db_session, current_user)
-    decision = await checker.check_access(podcast_uuid, AccessAction.READ, AccessContext.PUBLIC_VIEW)
-
-    if not decision.allowed:
-        raise HTTPException(status_code=403, detail=decision.reason)
+async def _verify_podcast_episode_access(request, podcast_uuid, episode_uuid,
+                                         current_user, db_session, *, org_uuid):
+    from src.security.content_access import check_content_access
+    await check_content_access(
+        f"orgs/{org_uuid}/podcasts/{podcast_uuid}/episodes/{episode_uuid}/media",
+        current_user, db_session, request,
+    )
 
 
 @router.get(
@@ -213,7 +152,7 @@ async def stream_activity_video(
     SECURITY: Validates user has read access to the course via RBAC.
     """
     # SECURITY: Verify user has access to this course/activity
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     # Construct and validate the file path
     file_path = validate_video_path(
@@ -233,7 +172,7 @@ async def stream_activity_video(
 
     # Confirm the object exists first (offloaded head_object) so a missing file
     # returns 404 consistently for GET and HEAD instead of redirecting to a dead
-    # presigned URL. The 302 is cached, so this runs ~once per viewing session.
+    # presigned URL. Authorization is checked on every request.
     file_size, mime_type, exists = await asyncio.to_thread(get_file_info, file_path)
 
     if not exists:
@@ -246,7 +185,7 @@ async def stream_activity_video(
         return redirect
 
     # Parse Range header if present
-    range_header = request.headers.get("range")
+    range_header = normalize_range_header(request.headers.get("range"))
     if range_header and is_range_unsatisfiable(range_header, file_size):
         # RFC 7233: unsatisfiable range (empty file / start past EOF) → 416.
         return Response(
@@ -262,7 +201,7 @@ async def stream_activity_video(
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": mime_type,
-        "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
+        **PRIVATE_MEDIA_HEADERS,
         "X-Content-Type-Options": "nosniff",
     }
 
@@ -321,7 +260,7 @@ async def stream_activity_hls(
 
     SECURITY: RBAC runs before any content is read or any URL is signed.
     """
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     rel = _safe_hls_relpath(hls_path)
     if rel is None:
@@ -350,7 +289,7 @@ async def stream_activity_hls(
             headers={
                 # Shorter than the presign TTL so cached playlists never carry
                 # expired segment URLs.
-                "Cache-Control": "private, max-age=300",
+                **PRIVATE_MEDIA_HEADERS,
                 "X-Content-Type-Options": "nosniff",
             },
         )
@@ -379,7 +318,7 @@ async def stream_activity_hls(
         content=raw,
         media_type=_HLS_MIME.get(ext, "application/octet-stream"),
         headers={
-            "Cache-Control": "public, max-age=86400",
+            **PRIVATE_MEDIA_HEADERS,
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -411,7 +350,7 @@ async def stream_block_hls(
     db_session: AsyncSession = Depends(get_db_session),
 ):
     """Serve a video block's HLS assets. RBAC runs before any content/URL signing."""
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     rel = _safe_hls_relpath(hls_path)
     if rel is None:
@@ -440,7 +379,7 @@ async def stream_block_hls(
         return Response(
             content=body,
             media_type=_HLS_MIME[".m3u8"],
-            headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+            headers={**PRIVATE_MEDIA_HEADERS, "X-Content-Type-Options": "nosniff"},
         )
 
     if ext == ".key":
@@ -462,7 +401,7 @@ async def stream_block_hls(
     return Response(
         content=raw,
         media_type=_HLS_MIME.get(ext, "application/octet-stream"),
-        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+        headers={**PRIVATE_MEDIA_HEADERS, "X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -495,7 +434,7 @@ async def stream_activity_captions(
     db_session: AsyncSession = Depends(get_db_session),
 ):
     """Serve a WebVTT caption track. RBAC runs before any content is read."""
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
     if not _CAPTION_LANG_RE.match(lang):
         raise HTTPException(status_code=404, detail="Caption track not found")
     asset_key = (
@@ -509,7 +448,7 @@ async def stream_activity_captions(
         content=raw,
         media_type="text/vtt; charset=utf-8",
         headers={
-            "Cache-Control": "private, max-age=300",
+            **PRIVATE_MEDIA_HEADERS,
             "X-Content-Type-Options": "nosniff",
         },
     )
@@ -542,7 +481,7 @@ async def stream_block_audio(
     SECURITY: Validates user has read access to the course via RBAC.
     """
     # SECURITY: Verify user has access to this course/activity
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     # Construct and validate the file path
     file_path = validate_video_path(
@@ -565,7 +504,7 @@ async def stream_block_audio(
 
     # Confirm the object exists first (offloaded head_object) so a missing file
     # returns 404 consistently for GET and HEAD instead of redirecting to a dead
-    # presigned URL. The 302 is cached, so this runs ~once per viewing session.
+    # presigned URL. Authorization is checked on every request.
     file_size, mime_type, exists = await asyncio.to_thread(get_file_info, file_path)
 
     if not exists:
@@ -578,7 +517,7 @@ async def stream_block_audio(
         return redirect
 
     # Parse Range header if present
-    range_header = request.headers.get("range")
+    range_header = normalize_range_header(request.headers.get("range"))
     if range_header and is_range_unsatisfiable(range_header, file_size):
         # RFC 7233: unsatisfiable range (empty file / start past EOF) → 416.
         return Response(
@@ -594,7 +533,7 @@ async def stream_block_audio(
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": mime_type,
-        "Cache-Control": "public, max-age=86400",
+        **PRIVATE_MEDIA_HEADERS,
         "X-Content-Type-Options": "nosniff",
     }
 
@@ -644,7 +583,7 @@ async def head_block_audio(
 
     SECURITY: Validates user has read access to the course via RBAC.
     """
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     file_path = validate_video_path(
         CONTENT_DIR,
@@ -675,7 +614,7 @@ async def head_block_audio(
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Content-Type": mime_type,
-            "Cache-Control": "public, max-age=86400",
+            **PRIVATE_MEDIA_HEADERS,
         },
     )
 
@@ -713,7 +652,7 @@ async def stream_block_video(
     SECURITY: Validates user has read access to the course via RBAC.
     """
     # SECURITY: Verify user has access to this course/activity
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     # Construct and validate the file path
     file_path = validate_video_path(
@@ -736,7 +675,7 @@ async def stream_block_video(
 
     # Confirm the object exists first (offloaded head_object) so a missing file
     # returns 404 consistently for GET and HEAD instead of redirecting to a dead
-    # presigned URL. The 302 is cached, so this runs ~once per viewing session.
+    # presigned URL. Authorization is checked on every request.
     file_size, mime_type, exists = await asyncio.to_thread(get_file_info, file_path)
 
     if not exists:
@@ -749,7 +688,7 @@ async def stream_block_video(
         return redirect
 
     # Parse Range header if present
-    range_header = request.headers.get("range")
+    range_header = normalize_range_header(request.headers.get("range"))
     if range_header and is_range_unsatisfiable(range_header, file_size):
         # RFC 7233: unsatisfiable range (empty file / start past EOF) → 416.
         return Response(
@@ -765,7 +704,7 @@ async def stream_block_video(
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": mime_type,
-        "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
+        **PRIVATE_MEDIA_HEADERS,
         "X-Content-Type-Options": "nosniff",
     }
 
@@ -820,7 +759,7 @@ async def head_activity_video(
     SECURITY: Validates user has read access to the course via RBAC.
     """
     # SECURITY: Verify user has access to this course/activity
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     file_path = validate_video_path(
         CONTENT_DIR,
@@ -848,7 +787,7 @@ async def head_activity_video(
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Content-Type": mime_type,
-            "Cache-Control": "public, max-age=86400",
+            **PRIVATE_MEDIA_HEADERS,
         },
     )
 
@@ -882,7 +821,7 @@ async def head_block_video(
     SECURITY: Validates user has read access to the course via RBAC.
     """
     # SECURITY: Verify user has access to this course/activity
-    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session)
+    await _verify_course_activity_access(request, course_uuid, activity_uuid, current_user, db_session, org_uuid=org_uuid)
 
     file_path = validate_video_path(
         CONTENT_DIR,
@@ -913,7 +852,7 @@ async def head_block_video(
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Content-Type": mime_type,
-            "Cache-Control": "public, max-age=86400",
+            **PRIVATE_MEDIA_HEADERS,
         },
     )
 
@@ -950,7 +889,7 @@ async def stream_podcast_audio(
     SECURITY: Validates user has read access to the podcast via RBAC.
     """
     # SECURITY: Verify user has access to this podcast/episode
-    await _verify_podcast_episode_access(request, podcast_uuid, episode_uuid, current_user, db_session)
+    await _verify_podcast_episode_access(request, podcast_uuid, episode_uuid, current_user, db_session, org_uuid=org_uuid)
 
     # Construct and validate the file path
     file_path = validate_video_path(
@@ -970,7 +909,7 @@ async def stream_podcast_audio(
 
     # Confirm the object exists first (offloaded head_object) so a missing file
     # returns 404 consistently for GET and HEAD instead of redirecting to a dead
-    # presigned URL. The 302 is cached, so this runs ~once per viewing session.
+    # presigned URL. Authorization is checked on every request.
     file_size, mime_type, exists = await asyncio.to_thread(get_file_info, file_path)
 
     if not exists:
@@ -983,7 +922,7 @@ async def stream_podcast_audio(
         return redirect
 
     # Parse Range header if present
-    range_header = request.headers.get("range")
+    range_header = normalize_range_header(request.headers.get("range"))
     if range_header and is_range_unsatisfiable(range_header, file_size):
         # RFC 7233: unsatisfiable range (empty file / start past EOF) → 416.
         return Response(
@@ -999,7 +938,7 @@ async def stream_podcast_audio(
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": mime_type,
-        "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
+        **PRIVATE_MEDIA_HEADERS,
         "X-Content-Type-Options": "nosniff",
     }
 
@@ -1054,7 +993,7 @@ async def head_podcast_audio(
     SECURITY: Validates user has read access to the podcast via RBAC.
     """
     # SECURITY: Verify user has access to this podcast/episode
-    await _verify_podcast_episode_access(request, podcast_uuid, episode_uuid, current_user, db_session)
+    await _verify_podcast_episode_access(request, podcast_uuid, episode_uuid, current_user, db_session, org_uuid=org_uuid)
 
     file_path = validate_video_path(
         CONTENT_DIR,
@@ -1082,6 +1021,6 @@ async def head_podcast_audio(
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Content-Type": mime_type,
-            "Cache-Control": "public, max-age=86400",
+            **PRIVATE_MEDIA_HEADERS,
         },
     )

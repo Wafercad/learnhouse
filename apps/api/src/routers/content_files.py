@@ -5,13 +5,14 @@ Serves static content files from S3 storage when S3 is enabled.
 Replaces the StaticFiles mount for S3 deployments.
 
 SECURITY:
-- Activity content (videos, PDFs, blocks) for non-public courses requires auth
-- Course-level metadata (thumbnails) is always public (shown in listings)
-- Org-level content (logos, branding) is always public
+- Activity content uses the same publication, enrolment and RBAC checks as lessons
+- Published catalogue thumbnails are public; drafts require author access
+- Only explicit org branding paths are public
 - Podcast episode content for non-public podcasts requires auth
 """
 
 import os
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
@@ -24,7 +25,7 @@ from src.core.events.database import get_db_session
 from src.db.courses.courses import Course
 from src.db.podcasts.podcasts import Podcast
 from src.db.users import AnonymousUser, PublicUser, APITokenUser
-from src.db.user_organizations import UserOrganization
+from src.security.content_access import check_content_access as _check_content_access
 from src.security.auth import get_current_user
 from src.security.submission_file_access import (
     is_submission_file,
@@ -34,6 +35,9 @@ from src.services.courses.transfer.storage_utils import (
     get_storage_client,
     get_s3_bucket_name,
 )
+
+from src.services.utils.media_delivery import PRIVATE_MEDIA_HEADERS, content_headers
+from src.services.utils.object_stream import normalize_range_header, byte_range, stream_object
 
 router = APIRouter()
 
@@ -101,123 +105,6 @@ def _validate_content_path(file_path: str) -> str | None:
     return os.path.relpath(full_real, base_real)
 
 
-async def _check_content_access(
-    file_path: str,
-    current_user: PublicUser | AnonymousUser | APITokenUser,
-    db_session: AsyncSession,
-    request: Request | None = None,
-) -> None:
-    """
-    Check if the user has access to the requested content.
-
-    Path patterns:
-    - orgs/{uuid}/courses/{uuid}/activities/{uuid}/... → check course access
-    - orgs/{uuid}/courses/{uuid}/...                   → course metadata (public)
-    - orgs/{uuid}/podcasts/{uuid}/episodes/{uuid}/...  → check podcast access
-    - orgs/{uuid}/...                                  → org-level (public)
-    """
-    parts = file_path.split('/')
-
-    # Assignment submission files must be gated to the owner or an instructor —
-    # not the generic activity-content grant below (which would let any org
-    # member, or anyone on a public course, download another learner's work).
-    if is_submission_file(parts):
-        await enforce_submission_file_access(parts, current_user, db_session, request)
-        return
-
-    # Activity content: requires course to be public or user to be org member
-    if (
-        len(parts) >= 6
-        and parts[0] == 'orgs'
-        and parts[2] == 'courses'
-        and parts[4] == 'activities'
-    ):
-        course_uuid = parts[3]
-        course = (await db_session.execute(
-            select(Course).where(Course.course_uuid == course_uuid)
-        )).scalars().first()
-        if not course:
-            raise HTTPException(status_code=403, detail="Access denied")
-        if course.public:
-            return  # Public course — allow anonymous
-        if isinstance(current_user, AnonymousUser):
-            raise HTTPException(status_code=401, detail="Authentication required")
-        # Verify API token is scoped to the correct org
-        if isinstance(current_user, APITokenUser):
-            if current_user.org_id != course.org_id:
-                raise HTTPException(status_code=403, detail="Access denied")
-            return
-        # Verify user belongs to the org that owns this course
-        membership = (await db_session.execute(
-            select(UserOrganization).where(
-                UserOrganization.user_id == current_user.id,
-                UserOrganization.org_id == course.org_id,
-            )
-        )).scalars().first()
-        if not membership:
-            raise HTTPException(status_code=403, detail="Access denied")
-        return
-
-    # Podcast episode content: requires podcast to be public or user to be org member
-    if (
-        len(parts) >= 6
-        and parts[0] == 'orgs'
-        and parts[2] == 'podcasts'
-        and parts[4] == 'episodes'
-    ):
-        podcast_uuid = parts[3]
-        podcast = (await db_session.execute(
-            select(Podcast).where(Podcast.podcast_uuid == podcast_uuid)
-        )).scalars().first()
-        if not podcast:
-            raise HTTPException(status_code=403, detail="Access denied")
-        if podcast.public:
-            return  # Public podcast — allow anonymous
-        if isinstance(current_user, AnonymousUser):
-            raise HTTPException(status_code=401, detail="Authentication required")
-        # Verify API token is scoped to the correct org
-        if isinstance(current_user, APITokenUser):
-            if current_user.org_id != podcast.org_id:
-                raise HTTPException(status_code=403, detail="Access denied")
-            return
-        # Verify user belongs to the org that owns this podcast
-        membership = (await db_session.execute(
-            select(UserOrganization).where(
-                UserOrganization.user_id == current_user.id,
-                UserOrganization.org_id == podcast.org_id,
-            )
-        )).scalars().first()
-        if not membership:
-            raise HTTPException(status_code=403, detail="Access denied")
-        return
-
-    # Library media content: enforce the media's (folder-aware) access. Closes
-    # the legacy hole where orgs/{}/media/... fell through to the public branch.
-    if len(parts) >= 4 and parts[0] == 'orgs' and parts[2] == 'media':
-        from src.security.rbac import check_resource_access, AccessAction
-        media_uuid = parts[3]  # legacy keys embed media_uuid as the directory
-        if media_uuid.startswith('media_'):
-            await check_resource_access(
-                request, db_session, current_user, media_uuid, AccessAction.READ
-            )
-            return
-        # Randomized keys don't embed the media_uuid → deny direct /content
-        # access (these are only served via /media/{uuid}/file).
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Course metadata (thumbnails, etc.) and org-level content — always public
-    if len(parts) >= 2 and parts[0] == 'orgs':
-        return
-
-    # User content (avatars, profile images) — always public
-    if len(parts) >= 2 and parts[0] == 'users':
-        return
-
-    if isinstance(current_user, AnonymousUser):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    raise HTTPException(status_code=403, detail="Access denied")
-
-
 @router.get(
     "/content/{file_path:path}",
     summary="Serve a content file",
@@ -258,7 +145,7 @@ async def serve_content_file(
 
     # Get file metadata
     try:
-        head = s3_client.head_object(Bucket=bucket, Key=s3_key)
+        head = await asyncio.to_thread(s3_client.head_object, Bucket=bucket, Key=s3_key)
     except ClientError as e:
         code = e.response["Error"]["Code"]
         if code in ("NoSuchKey", "404"):
@@ -276,90 +163,24 @@ async def serve_content_file(
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": mime_type,
-        "Cache-Control": "public, max-age=86400",
-        "X-Content-Type-Options": "nosniff",
+        **content_headers(mime_type),
     }
 
-    range_header = request.headers.get("range")
-
+    range_header = normalize_range_header(request.headers.get("range"))
+    try:
+        start, end = byte_range(range_header, file_size)
+    except ValueError:
+        return Response(status_code=416, headers={
+            **PRIVATE_MEDIA_HEADERS, "Content-Range": f"bytes */{file_size}",
+        })
+    headers["Content-Length"] = str(max(0, end - start + 1))
     if range_header:
-        # Parse range
-        try:
-            range_spec = range_header.replace('bytes=', '')
-            if range_spec.startswith('-'):
-                suffix_length = int(range_spec[1:])
-                start = max(0, file_size - suffix_length)
-                end = file_size - 1
-            elif range_spec.endswith('-'):
-                start = int(range_spec[:-1])
-                end = file_size - 1
-            else:
-                parts = range_spec.split('-')
-                start = int(parts[0])
-                end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-
-            start = max(0, min(start, file_size - 1))
-            end = max(start, min(end, file_size - 1))
-        except (ValueError, IndexError):
-            start, end = 0, file_size - 1
-
-        content_length = end - start + 1
         headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-        headers["Content-Length"] = str(content_length)
-
-        def stream_range():
-            remaining = content_length
-            pos = start
-            while remaining > 0:
-                chunk_end = min(pos + CHUNK_SIZE - 1, end)
-                resp = s3_client.get_object(
-                    Bucket=bucket, Key=s3_key,
-                    Range=f"bytes={pos}-{chunk_end}",
-                )
-                try:
-                    data = resp['Body'].read()
-                finally:
-                    resp['Body'].close()
-                if not data:
-                    break
-                remaining -= len(data)
-                pos += len(data)
-                yield data
-
-        return StreamingResponse(
-            stream_range(),
-            status_code=206,
-            headers=headers,
-            media_type=mime_type,
-        )
-    else:
-        headers["Content-Length"] = str(file_size)
-
-        def stream_full():
-            remaining = file_size
-            pos = 0
-            while remaining > 0:
-                chunk_end = min(pos + CHUNK_SIZE - 1, file_size - 1)
-                resp = s3_client.get_object(
-                    Bucket=bucket, Key=s3_key,
-                    Range=f"bytes={pos}-{chunk_end}",
-                )
-                try:
-                    data = resp['Body'].read()
-                finally:
-                    resp['Body'].close()
-                if not data:
-                    break
-                remaining -= len(data)
-                pos += len(data)
-                yield data
-
-        return StreamingResponse(
-            stream_full(),
-            status_code=200,
-            headers=headers,
-            media_type=mime_type,
-        )
+    return StreamingResponse(
+        stream_object(s3_client, bucket, s3_key, start, end, CHUNK_SIZE),
+        status_code=206 if range_header else 200,
+        headers=headers, media_type=mime_type,
+    )
 
 
 @router.head(
@@ -396,7 +217,7 @@ async def head_content_file(
         raise HTTPException(status_code=500, detail="Storage not configured")
 
     try:
-        head = s3_client.head_object(Bucket=bucket, Key=s3_key)
+        head = await asyncio.to_thread(s3_client.head_object, Bucket=bucket, Key=s3_key)
     except ClientError as e:
         code = e.response["Error"]["Code"]
         if code in ("NoSuchKey", "404"):
@@ -417,6 +238,6 @@ async def head_content_file(
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Content-Type": mime_type,
-            "Cache-Control": "public, max-age=86400",
+            **content_headers(mime_type),
         },
     )
