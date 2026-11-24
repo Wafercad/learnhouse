@@ -3225,6 +3225,7 @@ async def retry_assignment_submission(
     assignment_uuid: str,
     current_user: PublicUser | AnonymousUser | APITokenUser,
     db_session: AsyncSession,
+    on_behalf_of_user_id: int | None = None,
 ):
     """
     Reset the current user's submission for ``assignment_uuid`` so they can
@@ -3239,8 +3240,14 @@ async def retry_assignment_submission(
     certificate is revoked. The student then re-fills the tasks and
     submits again, at which point ``create_assignment_submission``
     transitions the existing PENDING row to SUBMITTED.
+
+    A service-integration token may retry FOR a learner by passing
+    ``on_behalf_of_user_id`` (assignments.create, the seam the answer write
+    uses). Every other gate still applies to that learner: GRADED only, the
+    attempt cap, the deadline. A token naming nobody stays blocked outright.
     """
-    _block_api_tokens(current_user)
+    if on_behalf_of_user_id is None:
+        _block_api_tokens(current_user)
 
     statement = select(Assignment).where(Assignment.assignment_uuid == assignment_uuid)
     assignment = (await db_session.execute(statement)).scalars().first()
@@ -3264,9 +3271,17 @@ async def retry_assignment_submission(
             detail="Course not found",
         )
 
-    # Only READ permission is required: the student is rescheduling their
-    # own work, not editing the assignment configuration.
-    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+    token_learner = await _resolve_token_submission_user(
+        request, db_session, current_user, course, on_behalf_of_user_id
+    )
+    if token_learner is None:
+        # Only READ permission is required: the student is rescheduling their
+        # own work, not editing the assignment configuration.
+        await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+    else:
+        # From here on the learner IS the caller: their row, their cap, their
+        # deadline, their certificate.
+        current_user = token_learner
 
     # Row-level lock on the user's submission so two concurrent retries can't
     # both read attempt_number=N, pass the cap check, and increment to N+1 —

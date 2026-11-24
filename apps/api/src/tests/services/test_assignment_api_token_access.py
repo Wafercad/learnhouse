@@ -4,7 +4,8 @@ The assignment authoring + grading service functions used to hard-block every
 API token (``_block_api_tokens``). They now route instructor-style access
 through ``authorize_assignment_access``, which checks the single ``assignments``
 rights bucket and enforces the org boundary via the parent course UUID. The
-learner ``/me`` / self-submission / retry endpoints stay session-only.
+learner ``/me`` reads stay session-only; the learner writes (answer, file,
+submit, retry) accept a token only on behalf of a named learner.
 
 These tests pin that contract end-to-end against the real test DB:
   - a token with the right ``assignments`` action can author / read / grade;
@@ -447,7 +448,7 @@ class TestSessionOnlyEndpointsStillBlockTokens:
     async def test_retry_blocks_token(
         self, mock_request, db, org, course, chapter, activity
     ):
-        # Retry stays session-only — even a full-rights token is rejected.
+        # A token that names no learner is rejected, even a full-rights one.
         await _make_assignment(db, org, course, chapter, activity)
         token = _token(
             assignments=_assignments_rights(create=True, read=True, update=True, delete=True)
@@ -457,6 +458,121 @@ class TestSessionOnlyEndpointsStillBlockTokens:
                 mock_request, "assignment_token_test", token, db
             )
         assert exc.value.status_code == 403
+
+
+class TestTokenRetryOnBehalf:
+    """A token with assignments.create may retry a learner's GRADED submission.
+
+    Without it a custom frontend can never offer the retry the assignment allows:
+    the endpoint was session-only. Every learner gate still applies.
+    """
+
+    async def _seed_graded(self, db, org, course, chapter, activity, user_id, *, attempt=1):
+        assignment = await _make_assignment(db, org, course, chapter, activity)
+        assignment.allow_retries = True
+        assignment.max_retries = 3
+        db.add(assignment)
+        task = AssignmentTask(
+            title="Q1", description="d", hint="", reference_file=None,
+            assignment_type=AssignmentTaskTypeEnum.CUSTOM, contents={},
+            max_grade_value=100, assignment_id=assignment.id, org_id=org.id,
+            course_id=course.id, chapter_id=chapter.id, activity_id=activity.id,
+            assignment_task_uuid="assignmenttask_retry_obo",
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+        db.add(AssignmentTaskSubmission(
+            assignment_task_submission_uuid="ats_retry_obo",
+            task_submission={"answer": "x"}, grade=50,
+            task_submission_grade_feedback="ok", assignment_type=task.assignment_type,
+            user_id=user_id, activity_id=activity.id, course_id=course.id,
+            chapter_id=chapter.id, assignment_task_id=task.id,
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        ))
+        submission = AssignmentUserSubmission(
+            user_id=user_id, assignment_id=assignment.id, grade=80,
+            submission_status=AssignmentUserSubmissionStatus.GRADED,
+            overall_feedback="Good", attempt_number=attempt,
+            assignmentusersubmission_uuid="aus_retry_obo",
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        )
+        db.add(submission)
+        await db.commit()
+        await db.refresh(submission)
+        return submission
+
+    async def test_token_retries_for_learner(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        submission = await self._seed_graded(
+            db, org, course, chapter, activity, regular_user.id
+        )
+        token = _token(assignments=_assignments_rights(create=True))
+        result = await retry_assignment_submission(
+            mock_request, "assignment_token_test", token, db,
+            on_behalf_of_user_id=regular_user.id,
+        )
+        assert result["attempt_number"] == 2
+        await db.refresh(submission)
+        assert submission.submission_status == AssignmentUserSubmissionStatus.PENDING
+        left = (await db.execute(
+            select(AssignmentTaskSubmission).where(
+                AssignmentTaskSubmission.user_id == regular_user.id
+            )
+        )).scalars().first()
+        assert left is None
+
+    async def test_token_retry_without_create_right_forbidden(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        submission = await self._seed_graded(
+            db, org, course, chapter, activity, regular_user.id
+        )
+        token = _token(assignments=_assignments_rights(read=True))  # no create
+        with pytest.raises(HTTPException) as exc:
+            await retry_assignment_submission(
+                mock_request, "assignment_token_test", token, db,
+                on_behalf_of_user_id=regular_user.id,
+            )
+        assert exc.value.status_code == 403
+        await db.refresh(submission)
+        assert submission.attempt_number == 1
+
+    async def test_token_retry_for_non_member_forbidden(
+        self, mock_request, db, org, course, chapter, activity
+    ):
+        outsider = User(
+            id=997, username="outsider_retry", first_name="O", last_name="O",
+            email="outsider_retry@x.com", password="x", user_uuid="user_outsider_retry",
+            creation_date=str(datetime.now()), update_date=str(datetime.now()),
+        )
+        db.add(outsider)
+        await db.commit()
+        await self._seed_graded(db, org, course, chapter, activity, outsider.id)
+        token = _token(assignments=_assignments_rights(create=True))
+        with pytest.raises(HTTPException) as exc:
+            await retry_assignment_submission(
+                mock_request, "assignment_token_test", token, db,
+                on_behalf_of_user_id=outsider.id,
+            )
+        assert exc.value.status_code == 403
+
+    async def test_token_retry_still_honours_the_attempt_cap(
+        self, mock_request, db, org, course, chapter, activity, regular_user
+    ):
+        await self._seed_graded(
+            db, org, course, chapter, activity, regular_user.id, attempt=3
+        )
+        token = _token(assignments=_assignments_rights(create=True))
+        with pytest.raises(HTTPException) as exc:
+            await retry_assignment_submission(
+                mock_request, "assignment_token_test", token, db,
+                on_behalf_of_user_id=regular_user.id,
+            )
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "No retry attempts remaining"
 
 
 class TestTokenSubmitFileOnBehalf:

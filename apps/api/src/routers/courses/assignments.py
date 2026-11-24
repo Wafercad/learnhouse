@@ -824,16 +824,24 @@ async def api_final_grade_submission(
 async def api_retry_assignment_submission(
     request: Request,
     assignment_uuid: str,
+    on_behalf_of_user_id: int | None = None,
     current_user: PublicUser = Depends(get_current_user),
     db_session=Depends(get_db_session),
 ):
     """
     Reset the current user's submission so they can re-attempt the
-    assignment. Strictly self-service — instructors who want to force a
-    retry should reject the submission via the existing delete endpoint.
+    assignment. Self-service — instructors who want to force a retry should
+    reject the submission via the existing delete endpoint. A
+    service-integration token with ``assignments.create`` may retry for a
+    learner by passing ``on_behalf_of_user_id`` (the same seam the answer
+    write uses), so a custom frontend can offer its learners the retry.
     """
     return await retry_assignment_submission(
-        request, assignment_uuid, current_user, db_session
+        request,
+        assignment_uuid,
+        current_user,
+        db_session,
+        on_behalf_of_user_id=on_behalf_of_user_id,
     )
 
 
